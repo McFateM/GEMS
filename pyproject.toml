@@ -9,7 +9,10 @@ description = "Gather, export, map, and serialize Alma Digital / Specto records 
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "flet==1.0.0",
+  "flet==0.25.2",
+  "flet-desktop==0.25.2",
+  "python-dotenv>=1.0.0",
+  "requests>=2.31.0",
 ]
 
 [tool.setuptools.packages.find]

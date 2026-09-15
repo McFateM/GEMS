@@ -70,9 +70,19 @@ def process_export(
     source_system: str = "alma_digital",
 ) -> ExportResult:
     source = Path(source_path)
-    destination = Path(output_dir)
     payload = load_payload(source)
-    rows = normalize_records(payload, field_map=field_map, source_system=source_system)
+    return process_records(payload, output_dir, field_map=field_map, source_system=source_system)
+
+
+def process_records(
+    records: list[dict[str, Any]],
+    output_dir: str | Path,
+    *,
+    field_map: dict[str, str] | None = None,
+    source_system: str = "alma_digital",
+) -> ExportResult:
+    destination = Path(output_dir)
+    rows = normalize_records(records, field_map=field_map, source_system=source_system)
     exported_files = export_files(rows, destination / "objects")
 
     csv_path = destination / "collection_metadata.csv"
