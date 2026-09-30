@@ -38,6 +38,10 @@ class AppTests(unittest.TestCase):
                 for item in row.controls if isinstance(item, ft.FilledButton) and item.text == "Retrieve"
             )
             save_manifest = next(item for item in controls if isinstance(item, ft.FilledButton) and item.text.startswith("1)"))
+            export = next(
+                item for row in controls if isinstance(row, ft.Row)
+                for item in row.controls if isinstance(item, ft.FilledButton) and item.text.startswith("2)")
+            )
             numeric_fields = {
                 item.label: item for row in controls if isinstance(row, ft.Row)
                 for item in row.controls if isinstance(item, ft.TextField)
@@ -48,6 +52,7 @@ class AppTests(unittest.TestCase):
             self.assertEqual(["992", "993"], alma_client.return_value.fetch_records.call_args.args[0])
             save_manifest.on_click(None)
             on_directory(SimpleNamespace(path=directory))
+            export.on_click(None)
             first = Path(save_settings.call_args.args[0]["source_path"])
             self.assertEqual({"start_record": 2, "record_limit": 2, "available_records": 5},
                              json.loads(first.read_text(encoding="utf-8"))["retrieval"])
@@ -56,14 +61,43 @@ class AppTests(unittest.TestCase):
             numeric_fields["Start record"].on_change(None)
             retrieve.on_click(None)
             self.assertEqual(["994", "995"], alma_client.return_value.fetch_records.call_args.args[0])
-            save_manifest.on_click(None)
-            self.assertEqual(directory, directory_picker.call_args.kwargs["initial_directory"])
-            on_directory(SimpleNamespace(path=directory))
+            export.on_click(None)
+            directory_picker.assert_called_once()
             second = Path(save_settings.call_args.args[0]["source_path"])
             self.assertEqual(first.parent.parent, second.parent.parent)
             self.assertNotEqual(first.parent, second.parent)
             self.assertRegex(first.parent.parent.name, r"^mms-ids-[0-9a-f]{12}$")
             self.assertEqual(4, json.loads(second.read_text(encoding="utf-8"))["retrieval"]["start_record"])
+            self.assertTrue((first.parent / "collection_metadata.csv").exists())
+            self.assertTrue((second.parent / "collection_metadata.csv").exists())
+
+    def test_new_retrieval_needs_a_parent_folder_before_export(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("gems.app.LOG_PATH", Path(directory) / "gems.log"),
+            patch("gems.app.load_dotenv"),
+            patch("gems.app.load_settings", return_value={"alma_mms_ids": "991"}),
+            patch("gems.app.save_settings"),
+            patch("gems.app.AlmaClient") as alma_client,
+            patch("gems.app.process_export") as process_export,
+        ):
+            alma_client.return_value.fetch_records.return_value = [{"identifier": "991"}]
+            page = MagicMock()
+            main(page)
+            controls = page.add.call_args_list[0].args[0].content.controls
+            retrieve = next(
+                item for row in controls if isinstance(row, ft.Row)
+                for item in row.controls if isinstance(item, ft.FilledButton) and item.text == "Retrieve"
+            )
+            export = next(
+                item for row in controls if isinstance(row, ft.Row)
+                for item in row.controls if isinstance(item, ft.FilledButton) and item.text.startswith("2)")
+            )
+            retrieve.on_click(None)
+            export.on_click(None)
+            process_export.assert_not_called()
+            footer = page.add.call_args_list[1].args[0].content.controls
+            self.assertIn("Use button 1 to choose a parent folder", next(item.value for item in footer if isinstance(item, ft.Text)))
 
     def test_invalid_retrieval_range_is_reported_before_fetch(self):
         for start, limit, message in (
@@ -223,7 +257,7 @@ class AppTests(unittest.TestCase):
             directory_dialog.assert_called_once()
             page.overlay.extend.call_args.args[0][3].on_result(SimpleNamespace(path=directory))
             manifest_path = Path(save_settings.call_args.args[0]["source_path"])
-            self.assertRegex(manifest_path.name, r"^gems_campus-photo-archive_\d{8}T\d{12}Z\.json$")
+            self.assertRegex(manifest_path.name, r"^gems_campus-photo-archive_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_UTC\.json$")
             self.assertEqual("set-campus-photo-archive-123", manifest_path.parent.parent.name)
             self.assertEqual(Path(directory), manifest_path.parent.parent.parent)
             self.assertEqual(Path(save_settings.call_args.args[0]["output_path"]), manifest_path.parent)
@@ -308,7 +342,7 @@ class AppTests(unittest.TestCase):
             run_dir = manifest_path.parent
             self.assertEqual(Path(directory), run_dir.parent.parent)
             self.assertRegex(run_dir.parent.name, r"^mms-ids-[0-9a-f]{12}$")
-            self.assertRegex(run_dir.name, r"^\d{8}T\d{12}Z$")
+            self.assertRegex(run_dir.name, r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_UTC$")
             self.assertEqual(f"gems_mms-id-selection_{run_dir.name}.json", manifest_path.name)
 
             self.assertEqual([record], load_payload(manifest_path))
@@ -316,7 +350,7 @@ class AppTests(unittest.TestCase):
             self.assertEqual("MMS ID selection", manifest["collection_title"])
             self.assertNotIn("alma_set_id", manifest)
             self.assertEqual([record], manifest["records"])
-            self.assertIn(datetime.fromisoformat(manifest["created_at"]).strftime("%Y%m%dT%H%M%S"), run_dir.name)
+            self.assertIn(datetime.fromisoformat(manifest["created_at"]).strftime("%Y-%m-%d_%H-%M-%S_UTC"), run_dir.name)
             self.assertEqual(str(manifest_path), save_settings.call_args.args[0]["source_path"])
             self.assertEqual(str(run_dir), save_settings.call_args.args[0]["output_path"])
             csv_button.on_click(None)

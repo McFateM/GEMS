@@ -61,6 +61,7 @@ def main(page: ft.Page) -> None:
     retrieved_limit: int | None = None
     retrieved_total = 0
     retrieved_group = ""
+    pending_retrieval = False
     export_root = settings.get("export_root_path", "")
     manifest_created_at: datetime | None = None
     run_log_handler: logging.FileHandler | None = None
@@ -176,8 +177,10 @@ def main(page: ft.Page) -> None:
         )
 
     def on_source_pick(event: ft.FilePickerResultEvent) -> None:
+        nonlocal pending_retrieval
         if event.files:
             source_field.value = event.files[0].path
+            pending_retrieval = False
             update_settings()
             report(f"Selected manifest: {source_field.value}")
 
@@ -198,16 +201,14 @@ def main(page: ft.Page) -> None:
         update_settings()
         report("Field map cleared")
 
-    def on_manifest_save(event: ft.FilePickerResultEvent) -> None:
-        nonlocal run_log_handler, active_log_path, export_root
-        if not event.path:
-            return
+    def save_retrieved_manifest(parent: Path) -> None:
+        nonlocal run_log_handler, active_log_path, export_root, pending_retrieval
+        report("Saving Alma manifest...")
         try:
-            report("Saving Alma manifest...")
             slug = re.sub(r"[^a-z0-9]+", "-", retrieved_title.lower()).strip("-")[:40].strip("-") or "collection"
-            group_dir = Path(event.path) / retrieved_group
+            group_dir = parent / retrieved_group
             group_dir.mkdir(exist_ok=True)
-            run_name = f"{manifest_created_at:%Y%m%dT%H%M%S%fZ}"
+            run_name = f"{manifest_created_at:%Y-%m-%d_%H-%M-%S_UTC}"
             run_dir = group_dir / run_name
             suffix = 1
             while True:
@@ -246,11 +247,16 @@ def main(page: ft.Page) -> None:
             )
             source_field.value = str(manifest_path)
             output_field.value = str(run_dir)
-            export_root = str(Path(event.path))
+            export_root = str(parent)
+            pending_retrieval = False
             update_settings()
             report(f"Saved {len(alma_records)} Alma record(s) to {run_dir}. Ready to map and export.", success=True)
         except Exception as exc:  # pragma: no cover - UI feedback wrapper
             report(f"Alma manifest export failed: {exc}", error=True)
+
+    def on_manifest_save(event: ft.FilePickerResultEvent) -> None:
+        if event.path:
+            save_retrieved_manifest(Path(event.path))
 
     source_picker = ft.FilePicker(on_result=on_source_pick)
     output_picker = ft.FilePicker(on_result=on_output_pick)
@@ -267,7 +273,15 @@ def main(page: ft.Page) -> None:
         return field_map
 
     def run_export(_: ft.ControlEvent) -> None:
+        nonlocal manifest_created_at
         try:
+            if pending_retrieval:
+                if not export_root:
+                    raise ValueError("Use button 1 to choose a parent folder for this retrieval first.")
+                manifest_created_at = datetime.now(timezone.utc)
+                save_retrieved_manifest(Path(export_root))
+                if pending_retrieval:
+                    return
             report("Mapping and exporting manifest...")
             if not source_field.value or not output_field.value:
                 raise ValueError("Choose both an export file and a destination folder.")
@@ -288,7 +302,7 @@ def main(page: ft.Page) -> None:
 
     def fetch_alma_records(_: ft.ControlEvent) -> None:
         nonlocal alma_records, retrieved_title, retrieved_set_id, retrieved_collection_id
-        nonlocal retrieved_start, retrieved_limit, retrieved_total, retrieved_group
+        nonlocal retrieved_start, retrieved_limit, retrieved_total, retrieved_group, pending_retrieval
         try:
             close_run_log()
             report("Retrieving Alma records...")
@@ -297,6 +311,7 @@ def main(page: ft.Page) -> None:
             retrieved_set_id = ""
             retrieved_collection_id = ""
             retrieved_group = ""
+            pending_retrieval = False
             try:
                 start = int(start_field.value or "")
             except ValueError as exc:
@@ -355,6 +370,7 @@ def main(page: ft.Page) -> None:
             retrieved_limit = limit
             retrieved_total = total
             retrieved_group = group
+            pending_retrieval = True
             update_settings()
             report(f"Retrieved {len(alma_records)} Alma record(s), starting at {start} of {total}. Ready to export.", success=True)
         except Exception as exc:  # pragma: no cover - UI feedback wrapper
