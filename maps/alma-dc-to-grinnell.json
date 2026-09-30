@@ -1,0 +1,55 @@
+{
+  "name": "Alma Dublin Core to Grinnell CollectionBuilder template",
+  "decisions": "maps/alma-dc-to-grinnell.md",
+  "columns": [
+    "objectid", "parentid", "display_template", "original_file_name", "originating_system_id",
+    "object_location", "image_small", "image_thumb", "image_alt_text", "thumb_focus",
+    "title", "creator_personal", "creator_org", "interviewee", "interviewer", "date", "Time Period",
+    "description", "Subject (Topic)", "Subject (Person)", "Subject (Organization)",
+    "contributor_personal", "contributor_org", "location", "latitude", "longitude", "lanugage",
+    "source", "provenance", "Call Number", "Archival Series", "Box", "Folder Title", "Folder Number",
+    "Finding Aid Permalink", "Contributing Institution", "publisher", "extent", "medium", "genre",
+    "type", "format", "Digital Collection Title", "Digital Collection Permalink", "related",
+    "Avian Identifier", "identifier", "Filename", "Item Permalink", "rights", "Standardized Rights",
+    "Disclaimer"
+  ],
+  "rules": {
+    "objectid": {"from": "gems.objectid", "child": "inherit"},
+    "parentid": {"from": "gems.parentid", "child": "inherit"},
+    "display_template": {"from": "gems.display_template", "child": "inherit"},
+    "original_file_name": {"from": "gems.filename", "child": "inherit"},
+    "originating_system_id": {"from": "record.mms_id", "child": {"from": "gems.representation_id"}},
+    "title": {"from": "metadata.title", "split": false, "child": {"from": ["gems.label", "gems.filename"], "split": false}},
+    "creator_personal": {"from": "metadata.creator", "match": "^[A-Z][\\w'’.-]*(?: [A-Z][\\w'’.-]*)?, [A-Z]"},
+    "creator_org": {"from": "metadata.creator", "exclude": "^[A-Z][\\w'’.-]*(?: [A-Z][\\w'’.-]*)?, [A-Z]"},
+    "date": {"from": ["metadata.created", "metadata.date"]},
+    "Time Period": {"from": "metadata.temporal"},
+    "description": {"from": "metadata.abstract", "split": false},
+    "Subject (Topic)": {"from": "metadata.subject", "exclude": "^[A-Z][\\w'’.-]*(?: [A-Z][\\w'’.-]*)?, [A-Z]"},
+    "Subject (Person)": {"from": "metadata.subject", "match": "^[A-Z][\\w'’.-]*(?: [A-Z][\\w'’.-]*)?, [A-Z]"},
+    "contributor_personal": {"from": "metadata.contributor", "match": "^[A-Z][\\w'’.-]*(?: [A-Z][\\w'’.-]*)?, [A-Z]"},
+    "contributor_org": {"from": "metadata.contributor", "exclude": "^[A-Z][\\w'’.-]*(?: [A-Z][\\w'’.-]*)?, [A-Z]"},
+    "location": {"from": "metadata.spatial"},
+    "lanugage": {"from": "metadata.language"},
+    "Contributing Institution": {"value": "Grinnell College Libraries", "child": "inherit"},
+    "publisher": {"from": "metadata.publisher"},
+    "type": {"from": ["metadata.type", "gems.dcmi_type"], "exclude": "^compound$", "capitalize": true, "child": {"from": "gems.dcmi_type"}},
+    "format": {"from": "gems.mime_type", "child": "inherit"},
+    "Digital Collection Title": {"from": "metadata.isPartOf", "exclude": "^Digital Grinnell$"},
+    "identifier": {
+      "from": "metadata.identifier",
+      "match": "^grinnell:\\d+$",
+      "child": {"from": "gems.filename", "extract": "^(grinnell_\\d+)_", "replace": ["^grinnell_", "grinnell:"]}
+    },
+    "Filename": {"from": "gems.filenames", "child": "inherit"},
+    "Item Permalink": {"from": "metadata.identifier", "match": "^https?://hdl\\.handle\\.net/"},
+    "rights": {"from": "metadata.rights", "split": false, "strip_html": true, "child": "inherit"},
+    "Standardized Rights": {
+      "from": "metadata.rights",
+      "split": false,
+      "extract": "href=\"(https?://rightsstatements\\.org/[^\"]+)\"",
+      "replace": ["^https?://rightsstatements\\.org/page/([^/]+/[^/?]+)/?.*$", "http://rightsstatements.org/vocab/\\1/"],
+      "child": "inherit"
+    }
+  }
+}

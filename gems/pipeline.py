@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import csv
+import html
 import json
+import mimetypes
 import re
 import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -66,28 +69,47 @@ def process_export(
     source_path: str | Path,
     output_dir: str | Path,
     *,
-    field_map: dict[str, str] | None = None,
+    field_map: dict[str, Any] | None = None,
     source_system: str = "alma_digital",
 ) -> ExportResult:
     source = Path(source_path)
-    payload = load_payload(source)
-    return process_records(payload, output_dir, field_map=field_map, source_system=source_system)
+    if is_template_map(field_map) and source.suffix.lower() == ".json":
+        payload = json.loads(source.read_text(encoding="utf-8"))
+        records = iter_records(payload)
+        prefix = slugify(payload.get("objectid_prefix") or payload.get("collection_title") or "") if isinstance(payload, dict) else ""
+        used = used_dg_numbers(records)
+        for sibling in source.parent.parent.glob("*/gems_*.json"):
+            if sibling.resolve() != source.resolve():
+                try:
+                    used += used_dg_numbers(iter_records(json.loads(sibling.read_text(encoding="utf-8"))))
+                except (OSError, ValueError):
+                    continue
+        if assign_objectids(records, prefix, used) and isinstance(payload, dict):
+            source.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    else:
+        records = load_payload(source)
+    return process_records(records, output_dir, field_map=field_map, source_system=source_system)
 
 
 def process_records(
     records: list[dict[str, Any]],
     output_dir: str | Path,
     *,
-    field_map: dict[str, str] | None = None,
+    field_map: dict[str, Any] | None = None,
     source_system: str = "alma_digital",
 ) -> ExportResult:
     destination = Path(output_dir)
-    rows = normalize_records(records, field_map=field_map, source_system=source_system)
-    exported_files = export_files(rows, destination / "objects")
+    if is_template_map(field_map):
+        columns = [str(column) for column in field_map["columns"]]
+        rows, exported_files = map_to_template(records, field_map, destination / "objects")
+    else:
+        columns = COLLECTIONBUILDER_FIELDS
+        rows = normalize_records(records, field_map=field_map, source_system=source_system)
+        exported_files = export_files(rows, destination / "objects")
 
     csv_path = destination / "collection_metadata.csv"
     json_path = destination / "normalized_records.json"
-    write_collection_csv(rows, csv_path)
+    write_collection_csv(rows, csv_path, columns)
     write_structured_records(rows, json_path)
 
     return ExportResult(
@@ -248,27 +270,216 @@ def export_files(rows: list[dict[str, str]], objects_dir: Path) -> int:
         if not source:
             continue
         safe_name = safe_filename(row.get("filename") or infer_filename(source, index), index)
-        destination = objects_dir / safe_name
-        parsed = urlparse(source)
-        if parsed.scheme in {"http", "https"}:
-            urlretrieve(source, destination)
-        elif parsed.scheme == "file":
-            shutil.copy2(Path(unquote(parsed.path)), destination)
-        else:
-            shutil.copy2(Path(source), destination)
+        fetch_object(source, objects_dir / safe_name)
         row["filename"] = safe_name
         row["objectid"] = Path("objects", safe_name).as_posix()
         count += 1
     return count
 
 
-def write_collection_csv(rows: list[dict[str, str]], destination: Path) -> None:
+def fetch_object(source: str, destination: Path) -> None:
+    parsed = urlparse(source)
+    if parsed.scheme in {"http", "https"}:
+        urlretrieve(source, destination)
+    elif parsed.scheme == "file":
+        shutil.copy2(Path(unquote(parsed.path)), destination)
+    else:
+        shutil.copy2(Path(source), destination)
+
+
+def is_template_map(field_map: Any) -> bool:
+    return isinstance(field_map, dict) and isinstance(field_map.get("columns"), list)
+
+
+DCMI_TYPES = {"image": "Image", "audio": "Sound", "video": "MovingImage", "pdf": "Text"}
+DG_NUMBER = re.compile(r"(?:^|_)dg_(\d+)$")
+
+
+def slugify(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+
+
+def used_dg_numbers(records: list[dict[str, Any]]) -> list[int]:
+    ids: list[Any] = []
+    for record in records:
+        ids.append(record.get("objectid"))
+        children = record.get("child_objectids")
+        ids.extend(children.values() if isinstance(children, dict) else [])
+    return [int(found.group(1)) for value in ids if isinstance(value, str) and (found := DG_NUMBER.search(value))]
+
+
+def assign_objectids(records: list[dict[str, Any]], prefix: str, used_numbers: list[int]) -> bool:
+    """Give records (and compound children) missing `<prefix>_dg_<n>` IDs; n continues from now or the highest used n."""
+    number = max([int(time.time()) - 1, *used_numbers])
+    changed = False
+
+    def next_id() -> str:
+        nonlocal number, changed
+        number += 1
+        changed = True
+        return f"{prefix}_dg_{number}" if prefix else f"dg_{number}"
+
+    for record in records:
+        if not record.get("objectid"):
+            record["objectid"] = next_id()
+        items = representation_items(record)
+        if len(items) > 1:
+            children = record.get("child_objectids")
+            if not isinstance(children, dict):
+                children = record["child_objectids"] = {}
+            for item in items:
+                if not children.get(item["filename"]):
+                    children[item["filename"]] = next_id()
+    return changed
+
+
+def map_to_template(
+    records: list[dict[str, Any]],
+    template_map: dict[str, Any],
+    objects_dir: Path,
+) -> tuple[list[dict[str, str]], int]:
+    """Build one row per record, plus child rows for records with several files (CollectionBuilder compound objects)."""
+    columns = [str(column) for column in template_map["columns"]]
+    rules = template_map.get("rules", {})
+    assign_objectids(records, "", used_dg_numbers(records))
+    objects_dir.mkdir(parents=True, exist_ok=True)
+    rows: list[dict[str, str]] = []
+    count = 0
+    for record in records:
+        metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+        record_id = str(record["objectid"])
+        items = representation_items(record)
+        for item in items:
+            fetch_object(item["source"], objects_dir / item["filename"])
+            count += 1
+        if len(items) == 1:
+            parent = file_context(items[0])
+        elif items:
+            child_types = {file_context(item)["dcmi_type"] for item in items}
+            parent = {
+                "display_template": "compound_object",
+                "filenames": "; ".join(item["filename"] for item in items),
+                "dcmi_type": child_types.pop() if len(child_types) == 1 else "",
+            }
+        else:
+            parent = {"display_template": "record"}
+        parent.update(objectid=record_id, parentid="")
+        rows.append(build_template_row(columns, rules, record, metadata, parent, child=False))
+        if len(items) > 1:
+            for item in items:
+                context = file_context(item)
+                context.update(objectid=record["child_objectids"][item["filename"]], parentid=record_id)
+                rows.append(build_template_row(columns, rules, record, metadata, context, child=True))
+    return rows, count
+
+
+def representation_items(record: dict[str, Any]) -> list[dict[str, str]]:
+    details: dict[str, dict[str, str]] = {}
+    representations = record.get("representations")
+    for representation in representations if isinstance(representations, list) else []:
+        files = representation.get("files") if isinstance(representation, dict) else None
+        file_items = files.get("representation_file", []) if isinstance(files, dict) else []
+        for file_info in file_items if isinstance(file_items, list) else [file_items]:
+            if isinstance(file_info, dict) and file_info.get("label"):
+                details[str(file_info["label"])] = {
+                    "label": stringify(representation.get("label")),
+                    "representation_id": stringify(representation.get("id")),
+                }
+    items = [
+        {"source": file_info["source"], **details.get(file_info["filename"], {}),
+         "filename": safe_filename(file_info["filename"], index)}
+        for index, file_info in enumerate(extract_files(record), start=1)
+    ]
+    return sorted(items, key=lambda item: [
+        int(token) if token.isdigit() else token.lower() for token in re.split(r"(\d+)", item["filename"])
+    ])
+
+
+def file_context(item: dict[str, str]) -> dict[str, str]:
+    mime_type = mimetypes.guess_type(item["filename"])[0] or ""
+    kind = "pdf" if mime_type == "application/pdf" else mime_type.split("/")[0]
+    kind = kind if kind in DCMI_TYPES else ""
+    return {
+        "filename": item["filename"],
+        "filenames": item["filename"],
+        "label": item.get("label", ""),
+        "representation_id": item.get("representation_id", ""),
+        "mime_type": mime_type,
+        "display_template": kind or "record",
+        "dcmi_type": DCMI_TYPES.get(kind, ""),
+    }
+
+
+def build_template_row(
+    columns: list[str],
+    rules: dict[str, Any],
+    record: dict[str, Any],
+    metadata: dict[str, Any],
+    gems: dict[str, str],
+    *,
+    child: bool,
+) -> dict[str, str]:
+    row: dict[str, str] = {}
+    for column in columns:
+        rule = rules.get(column)
+        if child and isinstance(rule, dict) and rule.get("child") != "inherit":
+            rule = rule.get("child")
+        row[column] = apply_rule(rule, record, metadata, gems) if isinstance(rule, dict) else ""
+    return row
+
+
+def apply_rule(rule: dict[str, Any], record: dict[str, Any], metadata: dict[str, Any], gems: dict[str, str]) -> str:
+    if "value" in rule:
+        return stringify(rule["value"])
+    sources = rule.get("from", [])
+    scopes = {"metadata": metadata, "record": record, "gems": gems}
+    for source in [sources] if isinstance(sources, str) else sources:
+        scope, _, key = str(source).partition(".")
+        if scope not in scopes:
+            raise ValueError(f"Unknown field map source {source!r}; use metadata.*, record.*, or gems.*")
+        values = transform_values(stringify(scopes[scope].get(key)), rule)
+        if values:
+            return "; ".join(values)
+    return ""
+
+
+def transform_values(value: str, rule: dict[str, Any]) -> list[str]:
+    results: list[str] = []
+    for part in value.split(";") if rule.get("split", True) else [value]:
+        if rule.get("strip_html"):
+            part = html.unescape(re.sub(r"<[^>]+>", "", part))
+        part = part.strip()
+        if not part:
+            continue
+        if "match" in rule and not re.search(rule["match"], part):
+            continue
+        if "exclude" in rule and re.search(rule["exclude"], part):
+            continue
+        if "extract" in rule:
+            found = re.search(rule["extract"], part)
+            if not found:
+                continue
+            part = found.group(1) if found.groups() else found.group(0)
+        if "replace" in rule:
+            part = re.sub(rule["replace"][0], rule["replace"][1], part)
+        if rule.get("capitalize"):
+            part = part[:1].upper() + part[1:]
+        if part.casefold() not in {existing.casefold() for existing in results}:
+            results.append(part)
+    return results
+
+
+def write_collection_csv(
+    rows: list[dict[str, str]],
+    destination: Path,
+    columns: list[str] = COLLECTIONBUILDER_FIELDS,
+) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=COLLECTIONBUILDER_FIELDS)
+        writer = csv.DictWriter(handle, fieldnames=columns)
         writer.writeheader()
         for row in rows:
-            writer.writerow({field: row.get(field, "") for field in COLLECTIONBUILDER_FIELDS})
+            writer.writerow({field: row.get(field, "") for field in columns})
 
 
 def write_structured_records(rows: list[dict[str, str]], destination: Path) -> None:

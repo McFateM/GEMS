@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from gems.pipeline import normalize_records, process_export
+from gems.pipeline import normalize_records, process_export, process_records
 
 
 class PipelineTests(unittest.TestCase):
@@ -82,6 +82,104 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual("objects/ledger-1.tif", rows[0]["objectid"])
             self.assertEqual("objects/ledger-2.tif", rows[1]["objectid"])
             self.assertTrue(result.json_path.exists())
+
+    def test_grinnell_template_map_builds_compound_and_single_rows(self):
+        field_map = json.loads((Path(__file__).parent.parent / "maps" / "alma-dc-to-grinnell.json").read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            for name in ("grinnell_12_OBJ.jpg", "grinnell_11_OBJ.jpg", "grinnell_5_OBJ.pdf"):
+                (tmp / name).write_text(name, encoding="utf-8")
+            metadata = {
+                "title": "Symposium photos", "creator": "Brown, John, 1800-1859; Des Moines Register",
+                "subject": "Slavery; Brown, John, 1800-1859", "type": "compound", "created": "2011",
+                "date": "2011-10", "identifier": "grinnell:10; http://hdl.handle.net/11084/10; alma:x",
+                "isPartOf": "Social Justice at Grinnell; Digital Grinnell",
+                "rights": '<a href="https://rightsstatements.org/page/NoC-US/1.0/?language=en">Public Domain</a>',
+            }
+            records = [
+                {
+                    "mms_id": "991", "metadata": metadata,
+                    "representations": [
+                        {"id": f"rep{number}", "label": f"Photo {number}",
+                         "files": {"representation_file": [{"label": f"grinnell_{number}_OBJ.jpg", "thumbnail_url": f"thumb{number}"}]}}
+                        for number in (12, 11)
+                    ],
+                    "files": [{"source": str(tmp / f"grinnell_{number}_OBJ.jpg"), "filename": f"grinnell_{number}_OBJ.jpg"} for number in (12, 11)],
+                },
+                {
+                    "mms_id": "992", "metadata": {"title": "Clipping", "type": "text; Text"},
+                    "files": [{"source": str(tmp / "grinnell_5_OBJ.pdf"), "filename": "grinnell_5_OBJ.pdf"}],
+                },
+            ]
+
+            result = process_records(records, tmp / "out", field_map=field_map)
+
+            self.assertEqual(3, result.file_count)
+            with result.csv_path.open("r", encoding="utf-8", newline="") as handle:
+                reader = csv.DictReader(handle)
+                rows = list(reader)
+            self.assertEqual(field_map["columns"], reader.fieldnames)
+            parent, first, second, single = rows
+            self.assertRegex(parent["objectid"], r"^dg_\d{10}$")
+            self.assertEqual(("", "compound_object"), (parent["parentid"], parent["display_template"]))
+            numbers = [int(row["objectid"].rsplit("_", 1)[1]) for row in rows]
+            self.assertEqual(list(range(numbers[0], numbers[0] + 4)), numbers)
+            self.assertEqual("Brown, John, 1800-1859", parent["creator_personal"])
+            self.assertEqual("Des Moines Register", parent["creator_org"])
+            self.assertEqual(("Slavery", "Brown, John, 1800-1859"), (parent["Subject (Topic)"], parent["Subject (Person)"]))
+            self.assertEqual("2011", parent["date"])
+            self.assertEqual("Image", parent["type"])
+            self.assertEqual("Social Justice at Grinnell", parent["Digital Collection Title"])
+            self.assertEqual(("grinnell:10", "http://hdl.handle.net/11084/10"), (parent["identifier"], parent["Item Permalink"]))
+            self.assertEqual(("Public Domain", "http://rightsstatements.org/vocab/NoC-US/1.0/"), (parent["rights"], parent["Standardized Rights"]))
+            self.assertEqual("", parent["image_thumb"])
+            self.assertEqual((parent["objectid"], "image"), (first["parentid"], first["display_template"]))
+            self.assertEqual(("Photo 11", "rep11", "grinnell:11"), (first["title"], first["originating_system_id"], first["identifier"]))
+            self.assertEqual(("", "image/jpeg"), (first["object_location"], first["format"]))
+            self.assertEqual("", first["description"])
+            self.assertEqual("Public Domain", first["rights"])
+            self.assertEqual(parent["objectid"], second["parentid"])
+            self.assertEqual(("", "pdf", "Text"), (single["parentid"], single["display_template"], single["type"]))
+            self.assertTrue((tmp / "out" / "objects" / "grinnell_5_OBJ.pdf").exists())
+
+    def test_template_objectids_are_persisted_and_unique_across_batches(self):
+        field_map = {"columns": ["objectid", "parentid"], "rules": {
+            "objectid": {"from": "gems.objectid", "child": "inherit"},
+            "parentid": {"from": "gems.parentid", "child": "inherit"},
+        }}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            group = Path(tmpdir) / "collection-social-justice-1"
+            manifests = []
+            for run in ("run-1", "run-2"):
+                (group / run).mkdir(parents=True)
+                files = []
+                for number in (1, 2):
+                    path = group / run / f"{run}-{number}.jpg"
+                    path.write_text("x", encoding="utf-8")
+                    files.append({"source": str(path), "filename": path.name})
+                manifest = group / run / f"gems_social-justice_{run}.json"
+                manifest.write_text(json.dumps({
+                    "collection_title": "Social Justice at Grinnell",
+                    "records": [{"mms_id": "991", "files": files}, {"mms_id": "992"}],
+                }), encoding="utf-8")
+                manifests.append(manifest)
+
+            def objectids(manifest: Path) -> list[str]:
+                result = process_export(manifest, manifest.parent, field_map=field_map)
+                with result.csv_path.open("r", encoding="utf-8", newline="") as handle:
+                    return [row["objectid"] for row in csv.DictReader(handle)]
+
+            first = objectids(manifests[0])
+            second = objectids(manifests[1])
+
+            self.assertEqual(4, len(first))
+            for value in first + second:
+                self.assertRegex(value, r"^social-justice-at-grinnell_dg_\d+$")
+            self.assertFalse(set(first) & set(second))
+            self.assertEqual(first, objectids(manifests[0]))
+            saved = json.loads(manifests[0].read_text(encoding="utf-8"))["records"][0]
+            self.assertEqual(first[0], saved["objectid"])
+            self.assertEqual(first[1:3], list(saved["child_objectids"].values()))
 
 
 if __name__ == "__main__":

@@ -6,12 +6,13 @@ import re
 from hashlib import sha256
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import flet as ft
 from dotenv import load_dotenv
 
 from .alma import AlmaClient
-from .pipeline import process_export
+from .pipeline import is_template_map, process_export
 
 APP_TITLE = "GEMS - Gather, Export, Map, Serialize"
 DATA_DIR = Path.home() / ".GEMS-data"
@@ -264,12 +265,16 @@ def main(page: ft.Page) -> None:
     mapping_picker = ft.FilePicker(on_result=on_mapping_pick)
     page.overlay.extend([source_picker, output_picker, mapping_picker])
 
-    def load_field_map() -> dict[str, str]:
+    def load_field_map() -> dict[str, Any]:
         field_map = json.loads(Path(mapping_field.value).read_text(encoding="utf-8")) if mapping_field.value else {}
+        if is_template_map(field_map):
+            if not isinstance(field_map.get("rules", {}), dict):
+                raise ValueError("A template field map's \"rules\" must be a JSON object keyed by column name.")
+            return field_map
         if not isinstance(field_map, dict) or not all(
             isinstance(key, str) and isinstance(value, str) for key, value in field_map.items()
         ):
-            raise ValueError("The field map must be a JSON object with string field names and values.")
+            raise ValueError("The field map must be a template map or a JSON object with string field names and values.")
         return field_map
 
     def run_export(_: ft.ControlEvent) -> None:

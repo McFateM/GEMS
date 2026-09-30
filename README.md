@@ -82,6 +82,8 @@ python -m gems \
   --field-map '{"title": "display title", "creator": "creator name"}'
 ```
 
+A field map may instead be a *template map*: a JSON object with an ordered `columns` list and per-column `rules`. It writes a CSV with exactly those columns, including compound-object parent/child rows. [maps/alma-dc-to-grinnell.json](maps/alma-dc-to-grinnell.json) targets the Grinnell CollectionBuilder template. Its rule syntax and mapping decisions are documented in [maps/alma-dc-to-grinnell.md](maps/alma-dc-to-grinnell.md). Headless: `--field-map "$(cat maps/alma-dc-to-grinnell.json)"`.
+
 The export writes:
 - `/path/to/output/collection_metadata.csv`
 - `/path/to/output/normalized_records.json`

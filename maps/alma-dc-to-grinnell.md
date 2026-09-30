@@ -1,0 +1,105 @@
+# Alma DC → Grinnell CollectionBuilder map: decisions
+
+Map file: [alma-dc-to-grinnell.json](alma-dc-to-grinnell.json)
+Target: row 1 (`:ColumnName`) of `DG-with-CB-and-Pagefind/collections/_collection-template/_data/grinnell-template.csv`
+Source studied: `metadata` of the Social Justice at Grinnell manifest `2026-09-30_14-04-05_CDT` (4 records, collection PID 81310653130004641).
+
+To use it, choose this JSON file in **Field map** before pressing **2) Map and Export Manifest to CSV**. The CSV columns are the `columns` list, in that order.
+
+## Rule vocabulary
+
+Each entry in `rules` is keyed by an output column. Columns without a rule are left blank.
+
+| Key | Meaning |
+| --- | --- |
+| `from` | Source name, or a list tried in order until one yields a value. Sources: `metadata.<key>` (Alma DC element, case-sensitive), `record.<key>` (top-level record field such as `mms_id`), `gems.<key>` (values computed by GEMS, below). |
+| `value` | A constant. |
+| `split` | Default `true`: split on `;`, trim, drop blanks, and remove case-insensitive duplicates, then re-join with `; `. Set `false` for prose (titles, abstracts, rights). |
+| `match` / `exclude` | Regex; keep / drop individual values that match. |
+| `extract` | Regex; keep group 1 (or the whole match) and drop values that don't match. |
+| `replace` | `[pattern, replacement]` passed to `re.sub`; runs after `extract`. |
+| `strip_html` | Remove HTML tags and decode entities. |
+| `capitalize` | Upper-case the first letter of each value. |
+| `child` | Rule for compound-object child rows: `"inherit"` (same rule), a rule object, or omitted (blank for children). |
+
+`gems.*` values: `objectid`, `parentid`, `display_template`, `filename` (own file; blank on a compound parent), `filenames` (all files for the row), `label` (Alma representation label), `representation_id`, `mime_type`, `dcmi_type`.
+
+## Row structure
+
+- **D1. One row per Alma bib; compound objects for multi-file bibs.** A bib with one file is one row. A bib with several files becomes a parent row (`display_template` = `compound_object`, no file) plus one child row per file with `parentid` set to the parent's `objectid`. This follows CollectionBuilder's compound-object conventions (`docs/compound_objects.md`). `compound_object` was chosen over `multiple` because Alma representations carry individual labels.
+- **D2. Children are sorted by natural filename order** (`grinnell_10379…` before `grinnell_10380…`). Alma returns representations in no useful order. The legacy order is in `tableOfContents`/`dginfo`, but it doesn't match the Alma files one-to-one (25 titles vs. 10 files).
+- **D3. Children carry only row-specific metadata.** Following CollectionBuilder guidance, child rows get only the control fields, title, type, format, identifier, filename, rights, and Contributing Institution. Everything descriptive lives on the parent.
+- **D4. `display_template` comes from the file's MIME type**: image → `image`, PDF → `pdf`, audio → `audio`, video → `video`, otherwise `record`. A bib with no files is `record`.
+- **D5. `objectid` follows the site's `<slug>_dg_<n>` convention** (e.g. `tdps_dg_1781104642`). Parents and compound children each get their own ID.
+  - `<slug>` is the manifest's `objectid_prefix` if you add one (to match a site slug such as `re26`); otherwise it is the slugified `collection_title`, e.g. `social-justice-at-grinnell`.
+  - `<n>` starts at the current Unix time and counts up by one per row, in row order. It always starts above the highest `_dg_` number already used by this manifest or by any sibling `gems_*.json` manifest in the same collection folder, so batches never collide.
+  - IDs are assigned on the first **Map and Export** and saved back into the manifest: `objectid` on each record, and `child_objectids` (keyed by filename) for compound children. Re-mapping the same manifest reuses them.
+  - Prepared manifests without a `collection_title`, or CSV manifests, get bare `dg_<n>` IDs. CSV IDs aren't saved.
+- **D6. DART supplies hosting fields.** `object_location`, `image_small`, and `image_thumb` are left blank for DART to fill.
+
+## Column decisions
+
+| Column | Source / rule | Rationale |
+| --- | --- | --- |
+| objectid | `gems.objectid`: `<slug>_dg_<n>` | See D5. |
+| parentid | `gems.parentid` | Blank except on children. |
+| display_template | `gems.display_template` | See D1/D4. |
+| original_file_name | `gems.filename` | Alma file label, e.g. `grinnell_187_OBJ.jpg`. Blank on compound parents. |
+| originating_system_id | `record.mms_id`; children: Alma representation ID | Alma is now the system of record; this allows round-trips back to Alma. |
+| object_location, image_small, image_thumb | — | Filled by DART (D6). |
+| image_alt_text, thumb_focus | — | CollectionBuilder falls back to description/title for alt text. |
+| title | `metadata.title`; children: representation label, else filename | Representation labels are the legacy child titles. |
+| creator_personal / creator_org | `metadata.creator`, split by a personal-name regex | DC doesn't distinguish persons from organizations. Values shaped like LC personal names (`Surname, Forename…`, optional second surname word) are treated as persons; everything else as organizations. Multi-word surnames beyond two words (e.g. `Van Der Berg, …`) will be misfiled as organizations. |
+| interviewee, interviewer | — | No source element. |
+| date | `metadata.created`, else `metadata.date` | The column is "Date Created". `created` is the proper DC term and is a clean year; `date` sometimes holds `after 1859`/`2011-10`. |
+| Time Period | `metadata.temporal` | e.g. `Eighteen fifties`. |
+| description | `metadata.abstract` (not split) | |
+| Subject (Topic) / Subject (Person) | `metadata.subject`, split by the same personal-name regex | e.g. `Brown, John, 1800-1859` → Person. |
+| Subject (Organization) | — | Can't be reliably separated from topics in DC (Q4). |
+| contributor_personal / contributor_org | `metadata.contributor`, personal-name regex | Same approach as creator. |
+| location | `metadata.spatial` | |
+| latitude, longitude | — | No source element. |
+| lanugage | `metadata.language` | The column name keeps the template's spelling (`lanugage`) so it matches the site's CSV. |
+| source, provenance, Call Number, Archival Series, Box, Folder Title, Folder Number, Finding Aid Permalink | — | No source element in the sample. |
+| Contributing Institution | constant `Grinnell College Libraries` | Every sample item is held by the Libraries. Confirm the wording (Q5). |
+| publisher | `metadata.publisher` | |
+| extent, medium, genre | — | No source element. |
+| type | `metadata.type` without `compound`, capitalized and de-duplicated; else `gems.dcmi_type`. Children: `gems.dcmi_type` | `text; Text` → `Text`. `compound` is an Islandora model, not a DCMI type, so compound parents take their children's shared DCMI type. |
+| format | `gems.mime_type` | CollectionBuilder expects a MIME type. The DC `format` values (`born digital`, `reformated digital`) describe digital origin, not file format. |
+| Digital Collection Title | `metadata.isPartOf` without `Digital Grinnell` | `Digital Grinnell` is the whole repository, not a collection. |
+| Digital Collection Permalink, related, Avian Identifier, Disclaimer | — | No source element. |
+| identifier | `metadata.identifier` value matching `grinnell:<n>`; children: derived from filename `grinnell_<n>_…` | Keeps the legacy Islandora PID for continuity with old URLs and handles. |
+| Filename | `gems.filenames` | Compound parents list all child filenames. |
+| Item Permalink | `metadata.identifier` value matching `http(s)://hdl.handle.net/…` | Handles exist only for parent/single objects. |
+| rights | `metadata.rights`, HTML stripped | The rights anchor text, e.g. `Public Domain in the United States`. |
+| Standardized Rights | the rightsstatements.org `href` in `metadata.rights`, normalized to `http://rightsstatements.org/vocab/<code>/<version>/` | Uses the canonical URI instead of the language-specific page URL. The plain copyright statement has no URL and stays blank (Q6). |
+
+## Source elements intentionally not mapped
+
+| Element | Reason |
+| --- | --- |
+| `alternative`, `oldalttitle` | No alternative-title column in the template. `oldalttitle` values are also repeated in `subject`. |
+| `tableOfContents` | Lists child titles, which already appear as child rows. |
+| `format` | Digital-origin statement (see `format` above). |
+| `dateAccepted` | Duplicates `date`. |
+| `googlesheetsource`, `dginfo`, `compoundrelationship` | Migration and administrative data from the Islandora-to-Alma move. |
+| `identifier` `alma:…` value | Superseded by `originating_system_id`. |
+
+## Open questions
+
+- ~~**Q1.**~~ Resolved 2026-09-30: use `<slug>_dg_<n>` (D5).
+- ~~**Q2.**~~ Resolved 2026-09-30: DART defines `object_location` (D6).
+- ~~**Q3.**~~ Resolved 2026-09-30: DART defines thumbnails and smalls (D6).
+- **Q4.** Can organizational subjects be identified (e.g. from MARC 610 instead of DC)?
+- **Q5.** What is the exact preferred wording for Contributing Institution?
+- **Q6.** Should the standard copyright statement map to `http://rightsstatements.org/vocab/InC/1.0/`?
+
+## Decision log
+
+Add new entries at the top. Record the date, the column(s), what changed in the JSON map, and why. Mark any answered open question as resolved here.
+
+| Date | Column(s) | Decision | Reason |
+| --- | --- | --- | --- |
+| 2026-09-30 | objectid, parentid | `objectid` is `<slug>_dg_<n>`, persisted in the manifest (D5). Resolves Q1. | Matches site convention. |
+| 2026-09-30 | object_location, image_small, image_thumb | Rules removed; left blank (D6). Resolves Q2, Q3. | DART defines hosting and derivative fields. |
+| 2026-09-30 | all | Initial map (D1–D4 and the column table above). | Built from the Social Justice at Grinnell manifest `2026-09-30_14-04-05_CDT`. |
