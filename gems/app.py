@@ -55,6 +55,7 @@ def main(page: ft.Page) -> None:
     alma_records: list[dict] = []
     retrieved_title = ""
     retrieved_set_id = ""
+    retrieved_collection_id = ""
     manifest_created_at: datetime | None = None
     run_log_handler: logging.FileHandler | None = None
     active_log_path = LOG_PATH
@@ -89,7 +90,7 @@ def main(page: ft.Page) -> None:
     )
     alma_set_field = ft.TextField(
         label="Alma Set ID or Collection Title",
-        hint_text="Retrieve an Alma set by ID or exact title",
+        hint_text="Numeric set ID or exact collection title",
         value=settings.get("alma_set_selection", settings.get("alma_set_id", "")),
         expand=True,
     )
@@ -197,6 +198,8 @@ def main(page: ft.Page) -> None:
             }
             if retrieved_set_id:
                 payload["alma_set_id"] = retrieved_set_id
+            if retrieved_collection_id:
+                payload["alma_collection_pid"] = retrieved_collection_id
             manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
             handler = logging.FileHandler(run_dir / "gems.log", encoding="utf-8")
             handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
@@ -247,13 +250,14 @@ def main(page: ft.Page) -> None:
             report(f"Export failed: {exc}", error=True)
 
     def fetch_alma_records(_: ft.ControlEvent) -> None:
-        nonlocal alma_records, retrieved_title, retrieved_set_id
+        nonlocal alma_records, retrieved_title, retrieved_set_id, retrieved_collection_id
         try:
             close_run_log()
             report("Retrieving Alma records...")
             alma_records = []
             retrieved_title = ""
             retrieved_set_id = ""
+            retrieved_collection_id = ""
             client = AlmaClient()
             mms_ids = [value.strip() for value in (alma_ids_field.value or "").replace(",", "\n").splitlines()]
             if mms_ids:
@@ -263,8 +267,14 @@ def main(page: ft.Page) -> None:
                 selection = (alma_set_field.value or "").strip()
                 if not selection:
                     raise ValueError("Enter an Alma set ID, collection title, or at least one MMS ID.")
-                set_id, title = client.resolve_set(selection)
-                mms_ids = client.fetch_set_members(set_id)
+                if selection.isdecimal():
+                    set_id = selection
+                    title = client.fetch_set_title(set_id)
+                    mms_ids = client.fetch_set_members(set_id)
+                else:
+                    set_id = ""
+                    retrieved_collection_id, title = client.resolve_collection(selection)
+                    mms_ids = client.fetch_collection_bibs(retrieved_collection_id)
             last_milestone = 0
 
             def update_progress(completed: int, total: int) -> None:
@@ -377,6 +387,11 @@ def main(page: ft.Page) -> None:
                 [
                     ft.Icon(ft.Icons.INFO_OUTLINE),
                     status,
+                    ft.IconButton(
+                        icon=ft.Icons.COPY,
+                        tooltip="Copy status",
+                        on_click=lambda _: page.set_clipboard(status.value or ""),
+                    ),
                     ft.IconButton(icon=ft.Icons.RECEIPT_LONG, tooltip="View activity log", on_click=view_log),
                 ],
             ),

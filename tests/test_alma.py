@@ -26,8 +26,6 @@ class FakeSession:
         self.urls.append(url)
         if url.endswith("/sets/123"):
             return FakeResponse({"name": "Campus Photo Archive"})
-        if url.endswith("/sets"):
-            return FakeResponse({"total_record_count": 1, "set": [{"id": "123", "name": "Campus Photo Archive"}]})
         if url.endswith("/members"):
             return FakeResponse({"total_record_count": 2, "member": [{"id": "991"}, {"id": "992"}]})
         if url.endswith("/bibs/991"):
@@ -63,30 +61,39 @@ class AlmaClientTests(unittest.TestCase):
         self.assertEqual([{"identifier": "991"}, {"identifier": "992"}], records)
         self.assertEqual([(1, 2), (2, 2)], updates)
 
-    def test_title_resolution_checks_all_pages_and_rejects_duplicate_names(self) -> None:
+    def test_collection_title_resolves_to_pid_and_paginates_bibs(self) -> None:
         client = AlmaClient(api_key="test-key")
+        title = "Social Justice at Grinnell"
+        with patch.object(client, "_get", return_value={"collection": [
+            {"name": title, "pid": {"value": "8123"}},
+            {"name": "Other", "pid": {"value": "9999"}},
+        ]}) as get:
+            self.assertEqual(("8123", title), client.resolve_collection(title))
+            get.assert_called_once_with("/almaws/v1/bibs/collections", params={"q": f"name~{title}"})
+
         pages = [
-            {"total_record_count": 2, "set": [{"id": "1", "name": "Other"}]},
-            {"total_record_count": 2, "set": [{"id": "2", "name": "Campus Photo Archive"}]},
+            {"total_record_count": 2, "bib": [{"mms_id": "991"}]},
+            {"total_record_count": 2, "bib": [{"mms_id": "992"}]},
         ]
         with patch.object(client, "_get", side_effect=pages) as get:
-            self.assertEqual(("2", "Campus Photo Archive"), client.resolve_set("Campus Photo Archive"))
+            self.assertEqual(["991", "992"], client.fetch_collection_bibs("8123"))
             self.assertEqual(1, get.call_args.kwargs["params"]["offset"])
 
-        with patch.object(client, "_get", return_value={"total_record_count": 2, "set": [
-            {"id": "2", "name": "Campus Photo Archive"},
-            {"id": "3", "name": "Campus Photo Archive"},
+        with patch.object(client, "_get", return_value={"collection": [
+            {"pid": {"value": "2"}, "name": title},
+            {"pid": {"value": "3"}, "name": title},
         ]}):
-            with self.assertRaisesRegex(ValueError, "Found 2 Alma sets"):
-                client.resolve_set("Campus Photo Archive")
+            with self.assertRaisesRegex(ValueError, "Found 2 Alma collections"):
+                client.resolve_collection(title)
+        with patch.object(client, "_get", return_value={"collection": []}):
+            with self.assertRaisesRegex(ValueError, "Found 0 Alma collections"):
+                client.resolve_collection(title)
 
     def test_fetches_set_bib_metadata_and_linked_representation_files(self) -> None:
         session = FakeSession()
         client = AlmaClient(api_key="test-key", session=session)
 
         self.assertEqual("Campus Photo Archive", client.fetch_set_title("123"))
-        self.assertEqual(("123", "Campus Photo Archive"), client.resolve_set("123"))
-        self.assertEqual(("123", "Campus Photo Archive"), client.resolve_set("campus photo archive"))
         self.assertEqual(["991", "992"], client.fetch_set_members("123"))
         records = client.fetch_records(["991"])
 

@@ -15,6 +15,37 @@ from gems.pipeline import load_payload
 
 
 class AppTests(unittest.TestCase):
+    def test_collection_title_retrieves_collection_bibs_and_saves_pid(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("gems.app.LOG_PATH", Path(directory) / "gems.log"),
+            patch("gems.app.load_dotenv"),
+            patch("gems.app.load_settings", return_value={"alma_set_selection": "Social Justice at Grinnell"}),
+            patch("gems.app.save_settings"),
+            patch("gems.app.AlmaClient") as alma_client,
+            patch.object(ft.FilePicker, "get_directory_path"),
+        ):
+            alma_client.return_value.resolve_collection.return_value = ("8123", "Social Justice at Grinnell")
+            alma_client.return_value.fetch_collection_bibs.return_value = ["991"]
+            alma_client.return_value.fetch_records.return_value = [{"identifier": "991"}]
+            page = MagicMock()
+            main(page)
+            controls = page.add.call_args_list[0].args[0].content.controls
+            retrieve = next(
+                item for control in controls if isinstance(control, ft.Row)
+                for item in control.controls if isinstance(item, ft.FilledButton) and item.text == "Retrieve"
+            )
+            retrieve.on_click(None)
+            alma_client.return_value.resolve_collection.assert_called_once_with("Social Justice at Grinnell")
+            alma_client.return_value.fetch_collection_bibs.assert_called_once_with("8123")
+            alma_client.return_value.fetch_set_members.assert_not_called()
+            next(control for control in controls if isinstance(control, ft.FilledButton) and control.text.startswith("1)")).on_click(None)
+            page.overlay.extend.call_args.args[0][3].on_result(SimpleNamespace(path=directory))
+            manifest = json.loads(next(Path(directory).glob("gems_*/*.json")).read_text(encoding="utf-8"))
+            self.assertEqual("Social Justice at Grinnell", manifest["collection_title"])
+            self.assertEqual("8123", manifest["alma_collection_pid"])
+            self.assertNotIn("alma_set_id", manifest)
+
     def test_retrieval_reports_ten_percent_milestones(self):
         with (
             tempfile.TemporaryDirectory() as directory,
@@ -52,12 +83,12 @@ class AppTests(unittest.TestCase):
             tempfile.TemporaryDirectory() as directory,
             patch("gems.app.LOG_PATH", Path(directory) / "gems.log"),
             patch("gems.app.load_dotenv"),
-            patch("gems.app.load_settings", return_value={"alma_set_selection": "Campus Photo Archive"}),
+            patch("gems.app.load_settings", return_value={"alma_set_selection": "123"}),
             patch("gems.app.save_settings") as save_settings,
             patch("gems.app.AlmaClient") as alma_client,
             patch.object(ft.FilePicker, "get_directory_path") as directory_dialog,
         ):
-            alma_client.return_value.resolve_set.return_value = ("set-123", "Campus Photo Archive")
+            alma_client.return_value.fetch_set_title.return_value = "Campus Photo Archive"
             alma_client.return_value.fetch_set_members.return_value = ["991"]
             alma_client.return_value.fetch_records.return_value = [{"identifier": "991"}]
             page = MagicMock()
@@ -69,7 +100,7 @@ class AppTests(unittest.TestCase):
                 for item in control.controls
                 if isinstance(item, ft.TextField) and item.label == "Alma Set ID or Collection Title"
             )
-            self.assertEqual("Campus Photo Archive", selector.value)
+            self.assertEqual("123", selector.value)
             retrieve = next(
                 item
                 for control in controls if isinstance(control, ft.Row)
@@ -78,8 +109,9 @@ class AppTests(unittest.TestCase):
             retrieve.on_click(None)
             next(control for control in controls if isinstance(control, ft.FilledButton) and control.text == "1) Export Alma Records to JSON Manifest").on_click(None)
 
-            alma_client.return_value.resolve_set.assert_called_once_with("Campus Photo Archive")
-            alma_client.return_value.fetch_set_members.assert_called_once_with("set-123")
+            alma_client.return_value.fetch_set_title.assert_called_once_with("123")
+            alma_client.return_value.fetch_set_members.assert_called_once_with("123")
+            alma_client.return_value.resolve_collection.assert_not_called()
             directory_dialog.assert_called_once()
             page.overlay.extend.call_args.args[0][3].on_result(SimpleNamespace(path=directory))
             manifest_path = Path(save_settings.call_args.args[0]["source_path"])
@@ -88,7 +120,7 @@ class AppTests(unittest.TestCase):
             self.assertEqual(Path(save_settings.call_args.args[0]["output_path"]), manifest_path.parent)
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertEqual("Campus Photo Archive", manifest["collection_title"])
-            self.assertEqual("set-123", manifest["alma_set_id"])
+            self.assertEqual("123", manifest["alma_set_id"])
             self.assertEqual([{"identifier": "991"}], load_payload(manifest_path))
 
     def test_retrieval_error_is_visible_and_logged(self):
@@ -113,6 +145,9 @@ class AppTests(unittest.TestCase):
             status = next(item for item in footer.controls if isinstance(item, ft.Text))
             self.assertIn("Alma retrieval failed: Cannot connect", status.value)
             self.assertEqual(ft.Colors.RED_700, status.color)
+            copy_button = next(item for item in footer.controls if isinstance(item, ft.IconButton) and item.tooltip == "Copy status")
+            copy_button.on_click(None)
+            page.set_clipboard.assert_called_once_with(status.value)
             log_text = (Path(directory) / "gems.log").read_text(encoding="utf-8")
             self.assertIn("Alma retrieval failed: Cannot connect", log_text)
             self.assertIn("Traceback (most recent call last)", log_text)
@@ -155,7 +190,7 @@ class AppTests(unittest.TestCase):
             )
 
             retrieve_button.on_click(None)
-            alma_client.return_value.resolve_set.assert_not_called()
+            alma_client.return_value.resolve_collection.assert_not_called()
             alma_client.return_value.fetch_set_members.assert_not_called()
             manifest_button.on_click(None)
             directory_dialog.assert_called_once()
@@ -180,7 +215,9 @@ class AppTests(unittest.TestCase):
             log_text = (run_dir / "gems.log").read_text(encoding="utf-8")
             self.assertIn("Manifest contains 1 Alma record", log_text)
             self.assertIn("Export complete", log_text)
-            log_button = next(item for item in footer.controls if isinstance(item, ft.IconButton))
+            log_button = next(
+                item for item in footer.controls if isinstance(item, ft.IconButton) and item.tooltip == "View activity log"
+            )
             log_button.on_click(None)
             self.assertIn("Export complete", page.overlay.append.call_args.args[0].content.content.value)
 

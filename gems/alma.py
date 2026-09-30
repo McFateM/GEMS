@@ -45,36 +45,38 @@ class AlmaClient:
             raise ValueError(f"Alma set {set_id} has no name; enter a collection title.")
         return title.strip()
 
-    def resolve_set(self, selection: str) -> tuple[str, str]:
-        if not any(character.isspace() for character in selection):
-            try:
-                return selection, self.fetch_set_title(selection)
-            except RuntimeError as exc:
-                cause = exc.__cause__
-                if not isinstance(cause, requests.HTTPError) or cause.response is None or cause.response.status_code != 404:
-                    raise
-
-        offset = 0
-        matches: list[tuple[str, str]] = []
-        while True:
-            payload = self._get("/almaws/v1/conf/sets", params={"limit": 100, "offset": offset})
-            sets = payload.get("set", [])
-            if not isinstance(sets, list):
-                sets = [sets] if sets else []
-            matches.extend(
-                (str(item["id"]), item["name"])
-                for item in sets
-                if isinstance(item, dict)
-                and item.get("id")
-                and isinstance(item.get("name"), str)
-                and item["name"].strip().casefold() == selection.casefold()
-            )
-            offset += len(sets)
-            if not sets or offset >= int(payload.get("total_record_count", offset)):
-                break
+    def resolve_collection(self, title: str) -> tuple[str, str]:
+        payload = self._get("/almaws/v1/bibs/collections", params={"q": f"name~{title}"})
+        collections = payload.get("collection", [])
+        if not isinstance(collections, list):
+            collections = [collections] if collections else []
+        matches = [
+            item for item in collections
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+            and item["name"].strip().casefold() == title.casefold()
+        ]
         if len(matches) != 1:
-            raise ValueError(f"Found {len(matches)} Alma sets named {selection!r}; enter the set ID instead.")
-        return matches[0]
+            raise ValueError(f"Found {len(matches)} Alma collections titled {title!r}; check the title.")
+        pid = matches[0].get("pid")
+        collection_id = pid.get("value") if isinstance(pid, dict) else pid
+        if not collection_id:
+            raise ValueError(f"Alma collection {title!r} has no PID.")
+        return str(collection_id), matches[0]["name"].strip()
+
+    def fetch_collection_bibs(self, collection_id: str) -> list[str]:
+        mms_ids: list[str] = []
+        offset = 0
+        while True:
+            payload = self._get(
+                f"/almaws/v1/bibs/collections/{collection_id}/bibs", params={"limit": 100, "offset": offset}
+            )
+            bibs = payload.get("bib", [])
+            if not isinstance(bibs, list):
+                bibs = [bibs] if bibs else []
+            mms_ids.extend(str(bib["mms_id"]) for bib in bibs if isinstance(bib, dict) and bib.get("mms_id"))
+            offset += len(bibs)
+            if not bibs or offset >= int(payload.get("total_record_count", offset)):
+                return mms_ids
 
     def fetch_records(
         self, mms_ids: Iterable[str], *, on_progress: Callable[[int, int], None] | None = None
