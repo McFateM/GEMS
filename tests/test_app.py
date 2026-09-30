@@ -37,7 +37,7 @@ class AppTests(unittest.TestCase):
                 for item in control.controls if isinstance(item, ft.FilledButton) and item.text == "Retrieve"
             )
             retrieve.on_click(None)
-            next(control for control in controls if isinstance(control, ft.OutlinedButton)).on_click(None)
+            next(control for control in controls if isinstance(control, ft.FilledButton) and control.text == "1) Export Alma Records to JSON Manifest").on_click(None)
 
             alma_client.return_value.fetch_set_title.assert_called_once_with("set-123")
             filename = save_dialog.call_args.kwargs["file_name"]
@@ -98,7 +98,10 @@ class AppTests(unittest.TestCase):
                 for control in controls if isinstance(control, ft.Row)
                 for item in control.controls if isinstance(item, ft.FilledButton) and item.text == "Retrieve"
             )
-            manifest_button = next(control for control in controls if isinstance(control, ft.OutlinedButton))
+            manifest_button = next(
+                control for control in controls
+                if isinstance(control, ft.FilledButton) and control.text == "1) Export Alma Records to JSON Manifest"
+            )
             csv_button = next(
                 item
                 for control in controls if isinstance(control, ft.Row)

@@ -282,7 +282,7 @@ def main(page: ft.Page) -> None:
                     ft.Row([alma_set_field, ft.FilledButton("Retrieve", icon=ft.Icons.DOWNLOAD, on_click=fetch_alma_records)]),
                     collection_title_field,
                     alma_ids_field,
-                    ft.OutlinedButton(
+                    ft.FilledButton(
                         "1) Export Alma Records to JSON Manifest",
                         icon=ft.Icons.ARCHIVE,
                         on_click=export_alma_records,
