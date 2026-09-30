@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from hashlib import sha256
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -56,6 +57,11 @@ def main(page: ft.Page) -> None:
     retrieved_title = ""
     retrieved_set_id = ""
     retrieved_collection_id = ""
+    retrieved_start = 1
+    retrieved_limit: int | None = None
+    retrieved_total = 0
+    retrieved_group = ""
+    export_root = settings.get("export_root_path", "")
     manifest_created_at: datetime | None = None
     run_log_handler: logging.FileHandler | None = None
     active_log_path = LOG_PATH
@@ -99,6 +105,21 @@ def main(page: ft.Page) -> None:
         label="MMS IDs",
         hint_text="Optional: comma-separated MMS IDs",
         value=settings.get("alma_mms_ids", ""),
+    )
+    start_field = ft.TextField(
+        label="Start record",
+        value=settings.get("start_record", "1"),
+        on_change=lambda _: update_settings(),
+        keyboard_type=ft.KeyboardType.NUMBER,
+        width=160,
+    )
+    limit_field = ft.TextField(
+        label="Record limit",
+        hint_text="All",
+        value=settings.get("record_limit", ""),
+        on_change=lambda _: update_settings(),
+        keyboard_type=ft.KeyboardType.NUMBER,
+        width=160,
     )
     status = ft.Text("Ready", expand=True)
 
@@ -148,6 +169,9 @@ def main(page: ft.Page) -> None:
                 "field_map_path": mapping_field.value or "",
                 "alma_set_selection": alma_set_field.value or "",
                 "alma_mms_ids": alma_ids_field.value or "",
+                "start_record": start_field.value or "1",
+                "record_limit": limit_field.value or "",
+                "export_root_path": export_root,
             }
         )
 
@@ -175,26 +199,33 @@ def main(page: ft.Page) -> None:
         report("Field map cleared")
 
     def on_manifest_save(event: ft.FilePickerResultEvent) -> None:
-        nonlocal run_log_handler, active_log_path
+        nonlocal run_log_handler, active_log_path, export_root
         if not event.path:
             return
         try:
             report("Saving Alma manifest...")
             slug = re.sub(r"[^a-z0-9]+", "-", retrieved_title.lower()).strip("-")[:40].strip("-") or "collection"
-            run_name = f"gems_{slug}_{manifest_created_at:%Y%m%dT%H%M%S%fZ}"
-            run_dir = Path(event.path) / run_name
+            group_dir = Path(event.path) / retrieved_group
+            group_dir.mkdir(exist_ok=True)
+            run_name = f"{manifest_created_at:%Y%m%dT%H%M%S%fZ}"
+            run_dir = group_dir / run_name
             suffix = 1
             while True:
                 try:
                     run_dir.mkdir()
                     break
                 except FileExistsError:
-                    run_dir = Path(event.path) / f"{run_name}-{suffix}"
+                    run_dir = group_dir / f"{run_name}-{suffix}"
                     suffix += 1
-            manifest_path = run_dir / f"{run_dir.name}.json"
+            manifest_path = run_dir / f"gems_{slug}_{run_dir.name}.json"
             payload = {
                 "collection_title": retrieved_title,
                 "created_at": manifest_created_at.isoformat(),
+                "retrieval": {
+                    "start_record": retrieved_start,
+                    "record_limit": retrieved_limit,
+                    "available_records": retrieved_total,
+                },
                 "records": alma_records,
             }
             if retrieved_set_id:
@@ -208,9 +239,14 @@ def main(page: ft.Page) -> None:
             logger.addHandler(handler)
             run_log_handler = handler
             active_log_path = run_dir / "gems.log"
-            logger.info("Manifest contains %s Alma record(s) from %s", len(alma_records), retrieved_set_id or "MMS IDs")
+            logger.info(
+                "Manifest contains %s Alma record(s) from %s, starting at %s of %s",
+                len(alma_records), retrieved_set_id or retrieved_collection_id or "MMS IDs",
+                retrieved_start, retrieved_total,
+            )
             source_field.value = str(manifest_path)
             output_field.value = str(run_dir)
+            export_root = str(Path(event.path))
             update_settings()
             report(f"Saved {len(alma_records)} Alma record(s) to {run_dir}. Ready to map and export.", success=True)
         except Exception as exc:  # pragma: no cover - UI feedback wrapper
@@ -252,6 +288,7 @@ def main(page: ft.Page) -> None:
 
     def fetch_alma_records(_: ft.ControlEvent) -> None:
         nonlocal alma_records, retrieved_title, retrieved_set_id, retrieved_collection_id
+        nonlocal retrieved_start, retrieved_limit, retrieved_total, retrieved_group
         try:
             close_run_log()
             report("Retrieving Alma records...")
@@ -259,6 +296,19 @@ def main(page: ft.Page) -> None:
             retrieved_title = ""
             retrieved_set_id = ""
             retrieved_collection_id = ""
+            retrieved_group = ""
+            try:
+                start = int(start_field.value or "")
+            except ValueError as exc:
+                raise ValueError("Start record must be a positive whole number.") from exc
+            if start < 1:
+                raise ValueError("Start record must be a positive whole number.")
+            try:
+                limit = int(limit_field.value) if limit_field.value else None
+            except ValueError as exc:
+                raise ValueError("Record limit must be a positive whole number.") from exc
+            if limit is not None and limit < 1:
+                raise ValueError("Record limit must be a positive whole number.")
             client = AlmaClient()
             mms_ids = [value.strip() for value in (alma_ids_field.value or "").replace(",", "\n").splitlines()]
             if mms_ids:
@@ -276,6 +326,19 @@ def main(page: ft.Page) -> None:
                     set_id = ""
                     retrieved_collection_id, title = client.resolve_collection(selection)
                     mms_ids = client.fetch_collection_bibs(retrieved_collection_id)
+            mms_ids = list(dict.fromkeys(value.strip() for value in mms_ids if value.strip()))
+            if start > len(mms_ids):
+                raise ValueError(f"Start record {start} exceeds {len(mms_ids)} available record(s).")
+            total = len(mms_ids)
+            slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40].strip("-") or "collection"
+            if set_id:
+                group = f"set-{slug}-{set_id}"
+            elif retrieved_collection_id:
+                group = f"collection-{slug}-{retrieved_collection_id}"
+            else:
+                digest = sha256(",".join(sorted(mms_ids)).encode("utf-8")).hexdigest()[:12]
+                group = f"mms-ids-{digest}"
+            mms_ids = mms_ids[start - 1 : start - 1 + limit if limit is not None else None]
             last_milestone = 0
 
             def update_progress(completed: int, total: int) -> None:
@@ -288,8 +351,12 @@ def main(page: ft.Page) -> None:
             alma_records = client.fetch_records(mms_ids, on_progress=update_progress)
             retrieved_title = title
             retrieved_set_id = set_id
+            retrieved_start = start
+            retrieved_limit = limit
+            retrieved_total = total
+            retrieved_group = group
             update_settings()
-            report(f"Retrieved {len(alma_records)} Alma record(s). Ready to export.", success=True)
+            report(f"Retrieved {len(alma_records)} Alma record(s), starting at {start} of {total}. Ready to export.", success=True)
         except Exception as exc:  # pragma: no cover - UI feedback wrapper
             report(f"Alma retrieval failed: {exc}", error=True)
 
@@ -301,7 +368,10 @@ def main(page: ft.Page) -> None:
             close_run_log()
             manifest_created_at = datetime.now(timezone.utc)
             report("Choose a parent folder for the Alma export...")
-            manifest_picker.get_directory_path(dialog_title="Choose a parent folder for the Alma export")
+            manifest_picker.get_directory_path(
+                dialog_title="Choose a parent folder for the Alma export",
+                initial_directory=export_root or None,
+            )
         except Exception as exc:  # pragma: no cover - UI feedback wrapper
             report(f"Alma manifest export failed: {exc}", error=True)
 
@@ -318,6 +388,7 @@ def main(page: ft.Page) -> None:
                     ft.Text("Retrieve from Alma", size=20, weight=ft.FontWeight.W_600),
                     ft.Row([alma_set_field, ft.FilledButton("Retrieve", icon=ft.Icons.DOWNLOAD, on_click=fetch_alma_records)]),
                     alma_ids_field,
+                    ft.Row([start_field, limit_field]),
                     ft.FilledButton(
                         "1) Export Alma Records to JSON Manifest",
                         icon=ft.Icons.ARCHIVE,

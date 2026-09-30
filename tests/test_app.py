@@ -15,6 +15,86 @@ from gems.pipeline import load_payload
 
 
 class AppTests(unittest.TestCase):
+    def test_mms_id_batches_share_a_group_but_not_a_run(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("gems.app.LOG_PATH", Path(directory) / "gems.log"),
+            patch("gems.app.load_dotenv"),
+            patch("gems.app.load_settings", return_value={
+                "alma_mms_ids": "991, 992, 993, 994, 995", "start_record": "2", "record_limit": "2",
+            }),
+            patch("gems.app.save_settings") as save_settings,
+            patch("gems.app.AlmaClient") as alma_client,
+            patch.object(ft.FilePicker, "get_directory_path") as directory_picker,
+        ):
+            alma_client.return_value.fetch_records.side_effect = lambda ids, **kwargs: [
+                {"identifier": value} for value in ids
+            ]
+            page = MagicMock()
+            main(page)
+            controls = page.add.call_args_list[0].args[0].content.controls
+            retrieve = next(
+                item for row in controls if isinstance(row, ft.Row)
+                for item in row.controls if isinstance(item, ft.FilledButton) and item.text == "Retrieve"
+            )
+            save_manifest = next(item for item in controls if isinstance(item, ft.FilledButton) and item.text.startswith("1)"))
+            numeric_fields = {
+                item.label: item for row in controls if isinstance(row, ft.Row)
+                for item in row.controls if isinstance(item, ft.TextField)
+            }
+            on_directory = page.overlay.extend.call_args.args[0][3].on_result
+
+            retrieve.on_click(None)
+            self.assertEqual(["992", "993"], alma_client.return_value.fetch_records.call_args.args[0])
+            save_manifest.on_click(None)
+            on_directory(SimpleNamespace(path=directory))
+            first = Path(save_settings.call_args.args[0]["source_path"])
+            self.assertEqual({"start_record": 2, "record_limit": 2, "available_records": 5},
+                             json.loads(first.read_text(encoding="utf-8"))["retrieval"])
+
+            numeric_fields["Start record"].value = "4"
+            numeric_fields["Start record"].on_change(None)
+            retrieve.on_click(None)
+            self.assertEqual(["994", "995"], alma_client.return_value.fetch_records.call_args.args[0])
+            save_manifest.on_click(None)
+            self.assertEqual(directory, directory_picker.call_args.kwargs["initial_directory"])
+            on_directory(SimpleNamespace(path=directory))
+            second = Path(save_settings.call_args.args[0]["source_path"])
+            self.assertEqual(first.parent.parent, second.parent.parent)
+            self.assertNotEqual(first.parent, second.parent)
+            self.assertRegex(first.parent.parent.name, r"^mms-ids-[0-9a-f]{12}$")
+            self.assertEqual(4, json.loads(second.read_text(encoding="utf-8"))["retrieval"]["start_record"])
+
+    def test_invalid_retrieval_range_is_reported_before_fetch(self):
+        for start, limit, message in (
+            ("0", "2", "Start record must be a positive whole number"),
+            ("abc", "2", "Start record must be a positive whole number"),
+            ("1", "0", "Record limit must be a positive whole number"),
+            ("1", "abc", "Record limit must be a positive whole number"),
+            ("4", "2", "exceeds 3 available record(s)"),
+        ):
+            with (
+                self.subTest(start=start, limit=limit),
+                tempfile.TemporaryDirectory() as directory,
+                patch("gems.app.LOG_PATH", Path(directory) / "gems.log"),
+                patch("gems.app.load_dotenv"),
+                patch("gems.app.load_settings", return_value={
+                    "alma_mms_ids": "991, 992, 993", "start_record": start, "record_limit": limit,
+                }),
+                patch("gems.app.AlmaClient") as alma_client,
+            ):
+                page = MagicMock()
+                main(page)
+                controls = page.add.call_args_list[0].args[0].content.controls
+                retrieve = next(
+                    item for row in controls if isinstance(row, ft.Row)
+                    for item in row.controls if isinstance(item, ft.FilledButton) and item.text == "Retrieve"
+                )
+                retrieve.on_click(None)
+                alma_client.return_value.fetch_records.assert_not_called()
+                footer = page.add.call_args_list[1].args[0].content.controls
+                self.assertIn(message, next(item.value for item in footer if isinstance(item, ft.Text)))
+
     def test_last_typed_selection_restores_even_without_retrieval(self):
         stored = {"alma_set_selection": "9715828820004641", "alma_set_id": "9715828820004641"}
         with (
@@ -69,7 +149,7 @@ class AppTests(unittest.TestCase):
             alma_client.return_value.fetch_set_members.assert_not_called()
             next(control for control in controls if isinstance(control, ft.FilledButton) and control.text.startswith("1)")).on_click(None)
             page.overlay.extend.call_args.args[0][3].on_result(SimpleNamespace(path=directory))
-            manifest = json.loads(next(Path(directory).glob("gems_*/*.json")).read_text(encoding="utf-8"))
+            manifest = json.loads(next(Path(directory).glob("collection-social-justice-at-grinnell-8123/*/*.json")).read_text(encoding="utf-8"))
             self.assertEqual("Social Justice at Grinnell", manifest["collection_title"])
             self.assertEqual("8123", manifest["alma_collection_pid"])
             self.assertNotIn("alma_set_id", manifest)
@@ -144,7 +224,8 @@ class AppTests(unittest.TestCase):
             page.overlay.extend.call_args.args[0][3].on_result(SimpleNamespace(path=directory))
             manifest_path = Path(save_settings.call_args.args[0]["source_path"])
             self.assertRegex(manifest_path.name, r"^gems_campus-photo-archive_\d{8}T\d{12}Z\.json$")
-            self.assertEqual(manifest_path.stem, manifest_path.parent.name)
+            self.assertEqual("set-campus-photo-archive-123", manifest_path.parent.parent.name)
+            self.assertEqual(Path(directory), manifest_path.parent.parent.parent)
             self.assertEqual(Path(save_settings.call_args.args[0]["output_path"]), manifest_path.parent)
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertEqual("Campus Photo Archive", manifest["collection_title"])
@@ -225,8 +306,10 @@ class AppTests(unittest.TestCase):
             page.overlay.extend.call_args.args[0][3].on_result(SimpleNamespace(path=directory))
             manifest_path = Path(save_settings.call_args.args[0]["source_path"])
             run_dir = manifest_path.parent
-            self.assertEqual(Path(directory), run_dir.parent)
-            self.assertRegex(run_dir.name, r"^gems_mms-id-selection_\d{8}T\d{12}Z$")
+            self.assertEqual(Path(directory), run_dir.parent.parent)
+            self.assertRegex(run_dir.parent.name, r"^mms-ids-[0-9a-f]{12}$")
+            self.assertRegex(run_dir.name, r"^\d{8}T\d{12}Z$")
+            self.assertEqual(f"gems_mms-id-selection_{run_dir.name}.json", manifest_path.name)
 
             self.assertEqual([record], load_payload(manifest_path))
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -255,8 +338,8 @@ class AppTests(unittest.TestCase):
             page.overlay.extend.call_args.args[0][3].on_result(SimpleNamespace(path=directory))
             next_run_dir = Path(save_settings.call_args.args[0]["output_path"])
             self.assertNotEqual(run_dir, next_run_dir)
-            self.assertEqual(Path(directory), next_run_dir.parent)
-            self.assertTrue((next_run_dir / f"{next_run_dir.name}.json").exists())
+            self.assertEqual(run_dir.parent, next_run_dir.parent)
+            self.assertTrue((next_run_dir / f"gems_mms-id-selection_{next_run_dir.name}.json").exists())
             self.assertTrue((next_run_dir / "gems.log").exists())
             self.assertEqual(log_text, (run_dir / "gems.log").read_text(encoding="utf-8"))
 
