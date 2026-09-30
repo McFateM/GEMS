@@ -69,7 +69,7 @@ class AlmaClientTests(unittest.TestCase):
             {"name": "Other", "pid": {"value": "9999"}},
         ]}) as get:
             self.assertEqual(("8123", title), client.resolve_collection(title))
-            get.assert_called_once_with("/almaws/v1/bibs/collections", params={"q": f"name~{title}"})
+            get.assert_called_once_with("/almaws/v1/bibs/collections", params={"q": f"collection_name~{title}"})
 
         pages = [
             {"total_record_count": 2, "bib": [{"mms_id": "991"}]},

@@ -46,7 +46,7 @@ class AlmaClient:
         return title.strip()
 
     def resolve_collection(self, title: str) -> tuple[str, str]:
-        payload = self._get("/almaws/v1/bibs/collections", params={"q": f"name~{title}"})
+        payload = self._get("/almaws/v1/bibs/collections", params={"q": f"collection_name~{title}"})
         collections = payload.get("collection", [])
         if not isinstance(collections, list):
             collections = [collections] if collections else []
