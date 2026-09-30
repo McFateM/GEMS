@@ -15,6 +15,38 @@ from gems.pipeline import load_payload
 
 
 class AppTests(unittest.TestCase):
+    def test_retrieval_reports_ten_percent_milestones(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("gems.app.LOG_PATH", Path(directory) / "gems.log"),
+            patch("gems.app.load_dotenv"),
+            patch("gems.app.load_settings", return_value={"alma_mms_ids": ",".join(str(value) for value in range(100))}),
+            patch("gems.app.save_settings"),
+            patch("gems.app.AlmaClient") as alma_client,
+        ):
+            def fetch_records(mms_ids, *, on_progress):
+                for completed in range(1, 101):
+                    on_progress(completed, 100)
+                return [{"identifier": value} for value in mms_ids]
+
+            alma_client.return_value.fetch_records.side_effect = fetch_records
+            page = MagicMock()
+            main(page)
+            controls = page.add.call_args_list[0].args[0].content.controls
+            retrieve = next(
+                item for control in controls if isinstance(control, ft.Row)
+                for item in control.controls if isinstance(item, ft.FilledButton) and item.text == "Retrieve"
+            )
+            retrieve.on_click(None)
+
+            log = (Path(directory) / "gems.log").read_text(encoding="utf-8")
+            milestones = [line for line in log.splitlines() if "Retrieving Alma records:" in line]
+            self.assertEqual(10, len(milestones))
+            for percent, message in zip(range(10, 101, 10), milestones):
+                self.assertIn(f"{percent}% ({percent}/100)", message)
+            status = next(item for item in page.add.call_args_list[1].args[0].content.controls if isinstance(item, ft.Text))
+            self.assertIn("Retrieved 100 Alma record(s)", status.value)
+
     def test_alma_set_name_is_used_for_manifest(self):
         with (
             tempfile.TemporaryDirectory() as directory,

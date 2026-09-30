@@ -49,6 +49,20 @@ class FakeSession:
 
 
 class AlmaClientTests(unittest.TestCase):
+    def test_fetch_records_reports_progress_for_unique_ids(self) -> None:
+        client = AlmaClient(api_key="test-key")
+        updates: list[tuple[int, int]] = []
+        with (
+            patch.object(client, "_get", return_value={}),
+            patch.object(client, "_to_gems_record", side_effect=lambda mms_id, bib: {"identifier": mms_id}),
+        ):
+            records = client.fetch_records(
+                ["991", "992", "991", "  "],
+                on_progress=lambda completed, total: updates.append((completed, total)),
+            )
+        self.assertEqual([{"identifier": "991"}, {"identifier": "992"}], records)
+        self.assertEqual([(1, 2), (2, 2)], updates)
+
     def test_title_resolution_checks_all_pages_and_rejects_duplicate_names(self) -> None:
         client = AlmaClient(api_key="test-key")
         pages = [

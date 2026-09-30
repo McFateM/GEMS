@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import xml.etree.ElementTree as element_tree
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 import requests
@@ -76,11 +76,16 @@ class AlmaClient:
             raise ValueError(f"Found {len(matches)} Alma sets named {selection!r}; enter the set ID instead.")
         return matches[0]
 
-    def fetch_records(self, mms_ids: Iterable[str]) -> list[dict[str, Any]]:
+    def fetch_records(
+        self, mms_ids: Iterable[str], *, on_progress: Callable[[int, int], None] | None = None
+    ) -> list[dict[str, Any]]:
         records = []
-        for mms_id in dict.fromkeys(item.strip() for item in mms_ids if item.strip()):
+        unique_ids = list(dict.fromkeys(item.strip() for item in mms_ids if item.strip()))
+        for mms_id in unique_ids:
             bib = self._get(f"/almaws/v1/bibs/{mms_id}", params={"view": "full", "expand": "None"})
             records.append(self._to_gems_record(mms_id, bib))
+            if on_progress is not None:
+                on_progress(len(records), len(unique_ids))
         return records
 
     def _get(self, path: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:

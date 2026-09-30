@@ -265,7 +265,16 @@ def main(page: ft.Page) -> None:
                     raise ValueError("Enter an Alma set ID, collection title, or at least one MMS ID.")
                 set_id, title = client.resolve_set(selection)
                 mms_ids = client.fetch_set_members(set_id)
-            alma_records = client.fetch_records(mms_ids)
+            last_milestone = 0
+
+            def update_progress(completed: int, total: int) -> None:
+                nonlocal last_milestone
+                milestone = completed * 10 // total
+                if milestone > last_milestone:
+                    last_milestone = milestone
+                    report(f"Retrieving Alma records: {milestone * 10}% ({completed}/{total})")
+
+            alma_records = client.fetch_records(mms_ids, on_progress=update_progress)
             retrieved_title = title
             retrieved_set_id = set_id
             update_settings()
