@@ -5,6 +5,8 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+from urllib.error import HTTPError
 
 from gems.pipeline import normalize_records, process_export, process_records
 
@@ -180,6 +182,23 @@ class PipelineTests(unittest.TestCase):
             saved = json.loads(manifests[0].read_text(encoding="utf-8"))["records"][0]
             self.assertEqual(first[0], saved["objectid"])
             self.assertEqual(first[1:3], list(saved["child_objectids"].values()))
+
+    def test_template_mapping_reuses_downloaded_objects_and_explains_expired_links(self):
+        field_map = {"columns": ["objectid"], "rules": {"objectid": {"from": "gems.objectid"}}}
+        url = "https://example.org/scan.jpg?Expires=1000&Signature=x"
+        records = [{"mms_id": "991", "files": [{"source": url, "filename": "scan.jpg"}]}]
+        expired = HTTPError(url, 403, "Forbidden", None, None)
+        with tempfile.TemporaryDirectory() as tmpdir, patch("gems.pipeline.urlretrieve", side_effect=expired) as download:
+            out = Path(tmpdir) / "out"
+            with self.assertRaisesRegex(ValueError, "scan.jpg expired .* Retrieve the records again"):
+                process_records(records, out, field_map=field_map)
+            self.assertFalse((out / "objects" / "scan.jpg.part").exists())
+
+            (out / "objects" / "scan.jpg").write_text("already here", encoding="utf-8")
+            download.reset_mock()
+            result = process_records(records, out, field_map=field_map)
+            download.assert_not_called()
+            self.assertEqual(1, result.file_count)
 
 
 if __name__ == "__main__":

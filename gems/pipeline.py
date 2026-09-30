@@ -10,7 +10,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.error import HTTPError
+from urllib.parse import parse_qs, unquote, urlparse
 from urllib.request import urlretrieve
 
 COLLECTIONBUILDER_FIELDS = [
@@ -280,7 +281,20 @@ def export_files(rows: list[dict[str, str]], objects_dir: Path) -> int:
 def fetch_object(source: str, destination: Path) -> None:
     parsed = urlparse(source)
     if parsed.scheme in {"http", "https"}:
-        urlretrieve(source, destination)
+        partial = destination.with_name(destination.name + ".part")
+        try:
+            urlretrieve(source, partial)
+        except HTTPError as error:
+            partial.unlink(missing_ok=True)
+            expires = parse_qs(parsed.query).get("Expires", [""])[0]
+            if error.code == 403 and expires.isdigit() and int(expires) < time.time():
+                raise ValueError(
+                    f"The download link for {destination.name} expired at "
+                    f"{time.strftime('%Y-%m-%d %H:%M:%S %Z', time.localtime(int(expires)))}. "
+                    "Retrieve the records again to create a manifest with fresh links."
+                ) from error
+            raise ValueError(f"Could not download {destination.name}: {error}") from error
+        partial.replace(destination)
     elif parsed.scheme == "file":
         shutil.copy2(Path(unquote(parsed.path)), destination)
     else:
@@ -350,7 +364,8 @@ def map_to_template(
         record_id = str(record["objectid"])
         items = representation_items(record)
         for item in items:
-            fetch_object(item["source"], objects_dir / item["filename"])
+            if not (objects_dir / item["filename"]).exists():
+                fetch_object(item["source"], objects_dir / item["filename"])
             count += 1
         if len(items) == 1:
             parent = file_context(items[0])
