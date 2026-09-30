@@ -15,6 +15,34 @@ from gems.pipeline import load_payload
 
 
 class AppTests(unittest.TestCase):
+    def test_last_typed_selection_restores_even_without_retrieval(self):
+        stored = {"alma_set_selection": "9715828820004641", "alma_set_id": "9715828820004641"}
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("gems.app.LOG_PATH", Path(directory) / "gems.log"),
+            patch("gems.app.load_dotenv"),
+            patch("gems.app.load_settings", side_effect=lambda: dict(stored)),
+            patch("gems.app.save_settings", side_effect=lambda settings: stored.update(settings)),
+        ):
+            def selection_field():
+                page = MagicMock()
+                main(page)
+                controls = page.add.call_args_list[0].args[0].content.controls
+                return next(
+                    item for row in controls if isinstance(row, ft.Row)
+                    for item in row.controls
+                    if isinstance(item, ft.TextField) and item.label == "Alma Set ID or Collection Title"
+                )
+
+            field = selection_field()
+            field.value = "Social Justice at Grinnell"
+            field.on_change(None)
+            self.assertEqual("Social Justice at Grinnell", stored["alma_set_selection"])
+            self.assertEqual("Social Justice at Grinnell", selection_field().value)
+
+            stored.pop("alma_set_selection")
+            self.assertEqual("", selection_field().value)
+
     def test_collection_title_retrieves_collection_bibs_and_saves_pid(self):
         with (
             tempfile.TemporaryDirectory() as directory,

@@ -91,7 +91,8 @@ def main(page: ft.Page) -> None:
     alma_set_field = ft.TextField(
         label="Alma Set ID or Collection Title",
         hint_text="Numeric set ID or exact collection title",
-        value=settings.get("alma_set_selection", settings.get("alma_set_id", "")),
+        value=settings.get("alma_set_selection", ""),
+        on_change=lambda _: update_settings(),
         expand=True,
     )
     alma_ids_field = ft.TextField(
