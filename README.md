@@ -12,7 +12,7 @@ This repository now contains a small Flet-based application and headless pipelin
 
 GEMS can retrieve records directly from Alma using the same environment-variable contract as CABB. Copy `.env.example` to `.env`, then configure `ALMA_API_KEY` and `ALMA_API_REGION`. GEMS does not store the key in its settings file.
 
-Enter a numeric Alma set ID or an exact collection title in the single input. Numeric IDs retrieve set members; text titles find an Alma bibliographic collection and retrieve its bibs. If you enter MMS IDs instead, GEMS retrieves only those IDs and ignores the set/collection field. GEMS retrieves the bib record, Dublin Core metadata, digital representations, and representation-file descriptors. When Alma returns a file `download_url`, GEMS downloads it into the CollectionBuilder export. The representation-file API may return descriptors without a downloadable URL; those records are still exported as metadata, and the status reports zero downloaded files.
+Enter a numeric Alma set ID or an exact collection title in the single input. Numeric IDs retrieve set members; text titles find an Alma bibliographic collection and retrieve its bibs. If you enter MMS IDs instead, GEMS retrieves only those IDs and ignores the set/collection field. GEMS retrieves the bib record, Dublin Core metadata, digital representations, and representation-file descriptors. GEMS requests signed download URLs for representation files and downloads them during the CSV export. Signed URLs can expire, so export soon after generating a manifest; older manifests without file URLs must be regenerated to export objects.
 
 During retrieval, the status strip reports progress at 10% milestones based on unique MMS IDs and records the updates in the activity log.
 

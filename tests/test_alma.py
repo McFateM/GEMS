@@ -47,6 +47,29 @@ class FakeSession:
 
 
 class AlmaClientTests(unittest.TestCase):
+    def test_fetches_signed_url_for_representation_file_without_url(self) -> None:
+        client = AlmaClient(api_key="test-key")
+
+        def get(path, *, params=None):
+            if path.endswith("/representations/r1/files/f1"):
+                self.assertEqual({"expand": "url"}, params)
+                return {"pid": "f1", "label": "scan.tif", "url": "https://download.example/scan.tif"}
+            if path.endswith("/representations"):
+                return {"representation": [{"id": "r1", "files": {"representation_file": [
+                    {"pid": "f1", "label": "scan.tif", "path": "private/storage/path"},
+                ]}}]}
+            return {"title": "Test"}
+
+        with patch.object(client, "_get", side_effect=get):
+            record = client.fetch_records(["991"])[0]
+
+        self.assertEqual(
+            [{"source": "https://download.example/scan.tif", "filename": "scan.tif"}], record["files"]
+        )
+        file_info = record["representations"][0]["files"]["representation_file"][0]
+        self.assertEqual("private/storage/path", file_info["path"])
+        self.assertEqual("https://download.example/scan.tif", file_info["url"])
+
     def test_fetch_records_reports_progress_for_unique_ids(self) -> None:
         client = AlmaClient(api_key="test-key")
         updates: list[tuple[int, int]] = []

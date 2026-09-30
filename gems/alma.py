@@ -123,6 +123,21 @@ class AlmaClient:
             files = representation.get("files")
             if isinstance(files, dict) and files.get("link") and "representation_file" not in files:
                 representation["files"] = self._get(str(files["link"]))
+                files = representation["files"]
+            if not isinstance(files, dict):
+                continue
+            file_items = files.get("representation_file", [])
+            if not isinstance(file_items, list):
+                file_items = [file_items] if file_items else []
+            for file_info in file_items:
+                if not isinstance(file_info, dict) or file_info.get("url") or file_info.get("download_url"):
+                    continue
+                if representation.get("id") and file_info.get("pid"):
+                    details = self._get(
+                        f"/almaws/v1/bibs/{mms_id}/representations/{representation['id']}/files/{file_info['pid']}",
+                        params={"expand": "url"},
+                    )
+                    file_info.update(details)
         files = _extract_downloadable_files(representations)
         return {
             "mms_id": mms_id,
