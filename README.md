@@ -14,6 +14,8 @@ GEMS can retrieve records directly from Alma using the same environment-variable
 
 Enter an Alma set ID to retrieve every MMS ID in the set, or paste one or more MMS IDs. GEMS retrieves the bib record, Dublin Core metadata, digital representations, and representation-file descriptors. When Alma returns a file `download_url`, GEMS downloads it into the CollectionBuilder export. The representation-file API may return descriptors without a downloadable URL; those records are still exported as metadata, and the status reports zero downloaded files.
 
+After retrieving records, use **1) Export Alma Records to JSON Manifest** to save them to a file. GEMS uses the Alma set name as the collection title, or the Collection title field if supplied. Enter a collection title when retrieving only MMS IDs. The manifest includes `collection_title`, UTC `created_at`, optional `alma_set_id`, and the full retrieved `records` array; its suggested filename includes a short title and UTC timestamp. The saved file is selected automatically as the prepared export manifest. Choose a destination folder and, optionally, a JSON field map, then use **2) Map and Export Manifest to CSV** to generate CollectionBuilder metadata and export available files.
+
 ## Import a prepared manifest
 
 To prepare an Alma Digital collection:
@@ -46,8 +48,6 @@ The minimal JSON shape is:
 
 `files` may also contain public `http` or `https` URLs. GEMS recognizes common metadata fields such as `title`, `creator`, `date`, `description`, `subject`, and `rights`; use the field map for institution-specific names. For a CSV, use one row per object and provide metadata columns plus a `path`, `file`, `url`, or `download_url` column.
 
-An Alma REST connector is not included yet. It would need an API key, Alma region, and a selection strategy such as MMS IDs or collection identifiers; it should retrieve representation metadata and files into the manifest format above.
-
 ## Usage
 
 ### Run the Flet app
@@ -57,6 +57,8 @@ An Alma REST connector is not included yet. It would need an API key, Alma regio
 ```
 
 The launch script creates `.venv`, installs the Flet desktop dependencies, and starts GEMS. To run with an existing environment, use `python -m gems`.
+
+The status strip at the bottom shows progress, results, and errors for retrieval and export. Use its activity-log button to read the full log, also saved at `~/.GEMS-data/logfiles/gems.log`.
 
 ### Run headlessly
 

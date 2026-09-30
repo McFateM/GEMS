@@ -39,6 +39,12 @@ class AlmaClient:
                 return members
             offset += 100
 
+    def fetch_set_title(self, set_id: str) -> str:
+        title = self._get(f"/almaws/v1/conf/sets/{set_id}").get("name")
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError(f"Alma set {set_id} has no name; enter a collection title.")
+        return title.strip()
+
     def fetch_records(self, mms_ids: Iterable[str]) -> list[dict[str, Any]]:
         records = []
         for mms_id in dict.fromkeys(item.strip() for item in mms_ids if item.strip()):

@@ -23,6 +23,8 @@ class FakeSession:
 
     def get(self, url: str, **_: object) -> FakeResponse:
         self.urls.append(url)
+        if url.endswith("/sets/123"):
+            return FakeResponse({"name": "Campus Photo Archive"})
         if url.endswith("/members"):
             return FakeResponse({"total_record_count": 2, "member": [{"id": "991"}, {"id": "992"}]})
         if url.endswith("/bibs/991"):
@@ -48,6 +50,7 @@ class AlmaClientTests(unittest.TestCase):
         session = FakeSession()
         client = AlmaClient(api_key="test-key", session=session)
 
+        self.assertEqual("Campus Photo Archive", client.fetch_set_title("123"))
         self.assertEqual(["991", "992"], client.fetch_set_members("123"))
         records = client.fetch_records(["991"])
 
