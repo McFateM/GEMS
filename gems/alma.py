@@ -45,6 +45,37 @@ class AlmaClient:
             raise ValueError(f"Alma set {set_id} has no name; enter a collection title.")
         return title.strip()
 
+    def resolve_set(self, selection: str) -> tuple[str, str]:
+        if not any(character.isspace() for character in selection):
+            try:
+                return selection, self.fetch_set_title(selection)
+            except RuntimeError as exc:
+                cause = exc.__cause__
+                if not isinstance(cause, requests.HTTPError) or cause.response is None or cause.response.status_code != 404:
+                    raise
+
+        offset = 0
+        matches: list[tuple[str, str]] = []
+        while True:
+            payload = self._get("/almaws/v1/conf/sets", params={"limit": 100, "offset": offset})
+            sets = payload.get("set", [])
+            if not isinstance(sets, list):
+                sets = [sets] if sets else []
+            matches.extend(
+                (str(item["id"]), item["name"])
+                for item in sets
+                if isinstance(item, dict)
+                and item.get("id")
+                and isinstance(item.get("name"), str)
+                and item["name"].strip().casefold() == selection.casefold()
+            )
+            offset += len(sets)
+            if not sets or offset >= int(payload.get("total_record_count", offset)):
+                break
+        if len(matches) != 1:
+            raise ValueError(f"Found {len(matches)} Alma sets named {selection!r}; enter the set ID instead.")
+        return matches[0]
+
     def fetch_records(self, mms_ids: Iterable[str]) -> list[dict[str, Any]]:
         records = []
         for mms_id in dict.fromkeys(item.strip() for item in mms_ids if item.strip()):

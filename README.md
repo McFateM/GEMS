@@ -12,9 +12,9 @@ This repository now contains a small Flet-based application and headless pipelin
 
 GEMS can retrieve records directly from Alma using the same environment-variable contract as CABB. Copy `.env.example` to `.env`, then configure `ALMA_API_KEY` and `ALMA_API_REGION`. GEMS does not store the key in its settings file.
 
-Enter an Alma set ID to retrieve every MMS ID in the set, or paste one or more MMS IDs. GEMS retrieves the bib record, Dublin Core metadata, digital representations, and representation-file descriptors. When Alma returns a file `download_url`, GEMS downloads it into the CollectionBuilder export. The representation-file API may return descriptors without a downloadable URL; those records are still exported as metadata, and the status reports zero downloaded files.
+Enter an Alma set ID or exact collection title in the single set field to retrieve every MMS ID in that set. If you enter MMS IDs instead, GEMS retrieves only those IDs and ignores the set field. GEMS retrieves the bib record, Dublin Core metadata, digital representations, and representation-file descriptors. When Alma returns a file `download_url`, GEMS downloads it into the CollectionBuilder export. The representation-file API may return descriptors without a downloadable URL; those records are still exported as metadata, and the status reports zero downloaded files.
 
-After retrieving records, use **1) Export Alma Records to JSON Manifest** to save them to a file. GEMS uses the Alma set name as the collection title, or the Collection title field if supplied. Enter a collection title when retrieving only MMS IDs. The manifest includes `collection_title`, UTC `created_at`, optional `alma_set_id`, and the full retrieved `records` array; its suggested filename includes a short title and UTC timestamp. The saved file is selected automatically as the prepared export manifest. Choose a destination folder and, optionally, a JSON field map, then use **2) Map and Export Manifest to CSV** to generate CollectionBuilder metadata and export available files.
+After retrieving records, use **1) Export Alma Records to JSON Manifest** and choose a parent folder. Each save creates a new `gems_<title>_<UTC timestamp>/` directory containing the manifest and `gems.log`. GEMS uses the resolved Alma set name as the collection title; a retrieval using only MMS IDs is labeled "MMS ID selection". The manifest includes `collection_title`, UTC `created_at`, optional `alma_set_id`, and the full retrieved `records` array. GEMS selects the new manifest and sets that run directory as the destination automatically. Optionally choose a JSON field map, then use **2) Map and Export Manifest to CSV** to write `collection_metadata.csv`, `normalized_records.json`, and `objects/` into the same run directory. Each new save creates a separate directory, leaving previous exports intact.
 
 ## Import a prepared manifest
 
@@ -58,7 +58,7 @@ The minimal JSON shape is:
 
 The launch script creates `.venv`, installs the Flet desktop dependencies, and starts GEMS. To run with an existing environment, use `python -m gems`.
 
-The status strip at the bottom shows progress, results, and errors for retrieval and export. Use its activity-log button to read the full log, also saved at `~/.GEMS-data/logfiles/gems.log`.
+The status strip at the bottom shows progress, results, and errors for retrieval and export. Its activity-log button reads the current run's `gems.log` after a manifest is saved; startup and pre-run messages remain in `~/.GEMS-data/logfiles/gems.log`.
 
 ### Run headlessly
 

@@ -20,17 +20,24 @@ class AppTests(unittest.TestCase):
             tempfile.TemporaryDirectory() as directory,
             patch("gems.app.LOG_PATH", Path(directory) / "gems.log"),
             patch("gems.app.load_dotenv"),
-            patch("gems.app.load_settings", return_value={"alma_set_id": "set-123"}),
-            patch("gems.app.save_settings"),
+            patch("gems.app.load_settings", return_value={"alma_set_selection": "Campus Photo Archive"}),
+            patch("gems.app.save_settings") as save_settings,
             patch("gems.app.AlmaClient") as alma_client,
-            patch.object(ft.FilePicker, "save_file") as save_dialog,
+            patch.object(ft.FilePicker, "get_directory_path") as directory_dialog,
         ):
-            alma_client.return_value.fetch_set_title.return_value = "Campus Photo Archive"
+            alma_client.return_value.resolve_set.return_value = ("set-123", "Campus Photo Archive")
             alma_client.return_value.fetch_set_members.return_value = ["991"]
             alma_client.return_value.fetch_records.return_value = [{"identifier": "991"}]
             page = MagicMock()
             main(page)
             controls = page.add.call_args_list[0].args[0].content.controls
+            self.assertFalse(any(isinstance(control, ft.TextField) and control.label == "Collection title" for control in controls))
+            selector = next(
+                item for control in controls if isinstance(control, ft.Row)
+                for item in control.controls
+                if isinstance(item, ft.TextField) and item.label == "Alma Set ID or Collection Title"
+            )
+            self.assertEqual("Campus Photo Archive", selector.value)
             retrieve = next(
                 item
                 for control in controls if isinstance(control, ft.Row)
@@ -39,11 +46,14 @@ class AppTests(unittest.TestCase):
             retrieve.on_click(None)
             next(control for control in controls if isinstance(control, ft.FilledButton) and control.text == "1) Export Alma Records to JSON Manifest").on_click(None)
 
-            alma_client.return_value.fetch_set_title.assert_called_once_with("set-123")
-            filename = save_dialog.call_args.kwargs["file_name"]
-            self.assertRegex(filename, r"^gems_campus-photo-archive_\d{8}T\d{6}Z\.json$")
-            manifest_path = Path(directory) / filename
-            page.overlay.extend.call_args.args[0][3].on_result(SimpleNamespace(path=str(manifest_path)))
+            alma_client.return_value.resolve_set.assert_called_once_with("Campus Photo Archive")
+            alma_client.return_value.fetch_set_members.assert_called_once_with("set-123")
+            directory_dialog.assert_called_once()
+            page.overlay.extend.call_args.args[0][3].on_result(SimpleNamespace(path=directory))
+            manifest_path = Path(save_settings.call_args.args[0]["source_path"])
+            self.assertRegex(manifest_path.name, r"^gems_campus-photo-archive_\d{8}T\d{12}Z\.json$")
+            self.assertEqual(manifest_path.stem, manifest_path.parent.name)
+            self.assertEqual(Path(save_settings.call_args.args[0]["output_path"]), manifest_path.parent)
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertEqual("Campus Photo Archive", manifest["collection_title"])
             self.assertEqual("set-123", manifest["alma_set_id"])
@@ -80,13 +90,16 @@ class AppTests(unittest.TestCase):
             tempfile.TemporaryDirectory() as directory,
             patch("gems.app.LOG_PATH", Path(directory) / "gems.log"),
             patch("gems.app.load_dotenv"),
-            patch("gems.app.load_settings", return_value={"alma_mms_ids": "123", "collection_title": "Test Collection", "output_path": directory}),
+            patch("gems.app.load_settings", return_value={"alma_mms_ids": "123", "alma_set_selection": "Ignored set", "output_path": directory}),
             patch("gems.app.save_settings") as save_settings,
             patch("gems.app.AlmaClient") as alma_client,
-            patch("gems.app.process_export") as process_export,
-            patch.object(ft.FilePicker, "save_file") as save_dialog,
+            patch.object(ft.FilePicker, "get_directory_path") as directory_dialog,
         ):
-            record = {"identifier": "123", "metadata": {"title": "Test"}, "files": []}
+            object_path = Path(directory) / "scan.txt"
+            object_path.write_text("scan data", encoding="utf-8")
+            record = {"identifier": "123", "metadata": {"title": "Test"}, "files": [
+                {"path": str(object_path), "filename": "scan.txt"},
+            ]}
             alma_client.return_value.fetch_records.return_value = [record]
             page = MagicMock()
             main(page)
@@ -110,28 +123,45 @@ class AppTests(unittest.TestCase):
             )
 
             retrieve_button.on_click(None)
+            alma_client.return_value.resolve_set.assert_not_called()
+            alma_client.return_value.fetch_set_members.assert_not_called()
             manifest_button.on_click(None)
-            save_dialog.assert_called_once()
-            filename = save_dialog.call_args.kwargs["file_name"]
-            self.assertRegex(filename, r"^gems_test-collection_\d{8}T\d{6}Z\.json$")
-            manifest_path = Path(directory) / filename
-            page.overlay.extend.call_args.args[0][3].on_result(SimpleNamespace(path=str(manifest_path)))
+            directory_dialog.assert_called_once()
+            page.overlay.extend.call_args.args[0][3].on_result(SimpleNamespace(path=directory))
+            manifest_path = Path(save_settings.call_args.args[0]["source_path"])
+            run_dir = manifest_path.parent
+            self.assertEqual(Path(directory), run_dir.parent)
+            self.assertRegex(run_dir.name, r"^gems_mms-id-selection_\d{8}T\d{12}Z$")
 
             self.assertEqual([record], load_payload(manifest_path))
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            self.assertEqual("Test Collection", manifest["collection_title"])
+            self.assertEqual("MMS ID selection", manifest["collection_title"])
+            self.assertNotIn("alma_set_id", manifest)
             self.assertEqual([record], manifest["records"])
-            self.assertIn(datetime.fromisoformat(manifest["created_at"]).strftime("%Y%m%dT%H%M%SZ"), filename)
+            self.assertIn(datetime.fromisoformat(manifest["created_at"]).strftime("%Y%m%dT%H%M%S"), run_dir.name)
             self.assertEqual(str(manifest_path), save_settings.call_args.args[0]["source_path"])
+            self.assertEqual(str(run_dir), save_settings.call_args.args[0]["output_path"])
             csv_button.on_click(None)
-            self.assertEqual(manifest_path, process_export.call_args.args[0])
-            self.assertEqual({}, process_export.call_args.kwargs["field_map"])
-            log_text = (Path(directory) / "gems.log").read_text(encoding="utf-8")
-            self.assertIn("Retrieved 1 Alma record", log_text)
+            self.assertTrue((run_dir / "collection_metadata.csv").exists())
+            self.assertTrue((run_dir / "normalized_records.json").exists())
+            self.assertEqual("scan data", (run_dir / "objects" / "scan.txt").read_text(encoding="utf-8"))
+            log_text = (run_dir / "gems.log").read_text(encoding="utf-8")
+            self.assertIn("Manifest contains 1 Alma record", log_text)
             self.assertIn("Export complete", log_text)
             log_button = next(item for item in footer.controls if isinstance(item, ft.IconButton))
             log_button.on_click(None)
             self.assertIn("Export complete", page.overlay.append.call_args.args[0].content.content.value)
+
+            retrieve_button.on_click(None)
+            self.assertEqual(log_text, (run_dir / "gems.log").read_text(encoding="utf-8"))
+            manifest_button.on_click(None)
+            page.overlay.extend.call_args.args[0][3].on_result(SimpleNamespace(path=directory))
+            next_run_dir = Path(save_settings.call_args.args[0]["output_path"])
+            self.assertNotEqual(run_dir, next_run_dir)
+            self.assertEqual(Path(directory), next_run_dir.parent)
+            self.assertTrue((next_run_dir / f"{next_run_dir.name}.json").exists())
+            self.assertTrue((next_run_dir / "gems.log").exists())
+            self.assertEqual(log_text, (run_dir / "gems.log").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

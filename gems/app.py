@@ -56,6 +56,8 @@ def main(page: ft.Page) -> None:
     retrieved_title = ""
     retrieved_set_id = ""
     manifest_created_at: datetime | None = None
+    run_log_handler: logging.FileHandler | None = None
+    active_log_path = LOG_PATH
 
     page.title = APP_TITLE
     page.theme_mode = ft.ThemeMode.LIGHT
@@ -86,15 +88,10 @@ def main(page: ft.Page) -> None:
         expand=True,
     )
     alma_set_field = ft.TextField(
-        label="Alma set ID",
-        hint_text="Optional: retrieve all MMS IDs in an Alma set",
-        value=settings.get("alma_set_id", ""),
+        label="Alma Set ID or Collection Title",
+        hint_text="Retrieve an Alma set by ID or exact title",
+        value=settings.get("alma_set_selection", settings.get("alma_set_id", "")),
         expand=True,
-    )
-    collection_title_field = ft.TextField(
-        label="Collection title",
-        hint_text="Required for MMS IDs; defaults to Alma set name",
-        value=settings.get("collection_title", ""),
     )
     alma_ids_field = ft.TextField(
         label="MMS IDs",
@@ -112,12 +109,20 @@ def main(page: ft.Page) -> None:
             logger.info(message)
         page.update()
 
+    def close_run_log() -> None:
+        nonlocal run_log_handler, active_log_path
+        if run_log_handler is not None:
+            logger.removeHandler(run_log_handler)
+            run_log_handler.close()
+            run_log_handler = None
+            active_log_path = LOG_PATH
+
     def view_log(_: ft.ControlEvent) -> None:
         try:
             dialog = ft.AlertDialog(
-                title=ft.Text(f"Activity log: {LOG_PATH}"),
+                title=ft.Text(f"Activity log: {active_log_path}"),
                 content=ft.Container(
-                    content=ft.TextField(value=LOG_PATH.read_text(encoding="utf-8"), multiline=True, read_only=True),
+                    content=ft.TextField(value=active_log_path.read_text(encoding="utf-8"), multiline=True, read_only=True),
                     width=720,
                     height=420,
                 ),
@@ -139,8 +144,7 @@ def main(page: ft.Page) -> None:
                 "source_path": source_field.value or "",
                 "output_path": output_field.value or "",
                 "field_map_path": mapping_field.value or "",
-                "alma_set_id": alma_set_field.value or "",
-                "collection_title": collection_title_field.value or "",
+                "alma_set_selection": alma_set_field.value or "",
                 "alma_mms_ids": alma_ids_field.value or "",
             }
         )
@@ -169,13 +173,23 @@ def main(page: ft.Page) -> None:
         report("Field map cleared")
 
     def on_manifest_save(event: ft.FilePickerResultEvent) -> None:
+        nonlocal run_log_handler, active_log_path
         if not event.path:
             return
         try:
             report("Saving Alma manifest...")
-            manifest_path = Path(event.path)
-            if manifest_path.suffix.lower() != ".json":
-                raise ValueError("Choose a .json filename for the Alma manifest.")
+            slug = re.sub(r"[^a-z0-9]+", "-", retrieved_title.lower()).strip("-")[:40].strip("-") or "collection"
+            run_name = f"gems_{slug}_{manifest_created_at:%Y%m%dT%H%M%S%fZ}"
+            run_dir = Path(event.path) / run_name
+            suffix = 1
+            while True:
+                try:
+                    run_dir.mkdir()
+                    break
+                except FileExistsError:
+                    run_dir = Path(event.path) / f"{run_name}-{suffix}"
+                    suffix += 1
+            manifest_path = run_dir / f"{run_dir.name}.json"
             payload = {
                 "collection_title": retrieved_title,
                 "created_at": manifest_created_at.isoformat(),
@@ -184,9 +198,17 @@ def main(page: ft.Page) -> None:
             if retrieved_set_id:
                 payload["alma_set_id"] = retrieved_set_id
             manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+            handler = logging.FileHandler(run_dir / "gems.log", encoding="utf-8")
+            handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+            close_run_log()
+            logger.addHandler(handler)
+            run_log_handler = handler
+            active_log_path = run_dir / "gems.log"
+            logger.info("Manifest contains %s Alma record(s) from %s", len(alma_records), retrieved_set_id or "MMS IDs")
             source_field.value = str(manifest_path)
+            output_field.value = str(run_dir)
             update_settings()
-            report(f"Saved {len(alma_records)} Alma record(s) to {manifest_path}. Ready to map and export.", success=True)
+            report(f"Saved {len(alma_records)} Alma record(s) to {run_dir}. Ready to map and export.", success=True)
         except Exception as exc:  # pragma: no cover - UI feedback wrapper
             report(f"Alma manifest export failed: {exc}", error=True)
 
@@ -227,22 +249,22 @@ def main(page: ft.Page) -> None:
     def fetch_alma_records(_: ft.ControlEvent) -> None:
         nonlocal alma_records, retrieved_title, retrieved_set_id
         try:
+            close_run_log()
             report("Retrieving Alma records...")
             alma_records = []
             retrieved_title = ""
             retrieved_set_id = ""
             client = AlmaClient()
             mms_ids = [value.strip() for value in (alma_ids_field.value or "").replace(",", "\n").splitlines()]
-            set_id = (alma_set_field.value or "").strip()
-            title = (collection_title_field.value or "").strip()
-            if set_id:
-                if not title:
-                    title = client.fetch_set_title(set_id)
-                mms_ids.extend(client.fetch_set_members(set_id))
-            if not title:
-                raise ValueError("Enter a collection title when retrieving MMS IDs without an Alma set.")
-            if not mms_ids:
-                raise ValueError("Enter an Alma set ID or at least one MMS ID.")
+            if mms_ids:
+                set_id = ""
+                title = "MMS ID selection"
+            else:
+                selection = (alma_set_field.value or "").strip()
+                if not selection:
+                    raise ValueError("Enter an Alma set ID, collection title, or at least one MMS ID.")
+                set_id, title = client.resolve_set(selection)
+                mms_ids = client.fetch_set_members(set_id)
             alma_records = client.fetch_records(mms_ids)
             retrieved_title = title
             retrieved_set_id = set_id
@@ -256,15 +278,10 @@ def main(page: ft.Page) -> None:
         try:
             if not alma_records:
                 raise ValueError("Retrieve Alma records before exporting.")
+            close_run_log()
             manifest_created_at = datetime.now(timezone.utc)
-            slug = re.sub(r"[^a-z0-9]+", "-", retrieved_title.lower()).strip("-")[:40].strip("-") or "collection"
-            report("Choose where to save the Alma manifest...")
-            manifest_picker.save_file(
-                dialog_title="Save Alma records as JSON manifest",
-                file_name=f"gems_{slug}_{manifest_created_at:%Y%m%dT%H%M%SZ}.json",
-                file_type=ft.FilePickerFileType.CUSTOM,
-                allowed_extensions=["json"],
-            )
+            report("Choose a parent folder for the Alma export...")
+            manifest_picker.get_directory_path(dialog_title="Choose a parent folder for the Alma export")
         except Exception as exc:  # pragma: no cover - UI feedback wrapper
             report(f"Alma manifest export failed: {exc}", error=True)
 
@@ -280,7 +297,6 @@ def main(page: ft.Page) -> None:
                     ft.Divider(),
                     ft.Text("Retrieve from Alma", size=20, weight=ft.FontWeight.W_600),
                     ft.Row([alma_set_field, ft.FilledButton("Retrieve", icon=ft.Icons.DOWNLOAD, on_click=fetch_alma_records)]),
-                    collection_title_field,
                     alma_ids_field,
                     ft.FilledButton(
                         "1) Export Alma Records to JSON Manifest",
