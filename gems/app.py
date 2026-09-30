@@ -4,7 +4,7 @@ import json
 import logging
 import re
 from hashlib import sha256
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 import flet as ft
@@ -17,6 +17,8 @@ APP_TITLE = "GEMS - Gather, Export, Map, Serialize"
 DATA_DIR = Path.home() / ".GEMS-data"
 SETTINGS_PATH = DATA_DIR / "settings.json"
 LOG_PATH = DATA_DIR / "logfiles" / "gems.log"
+LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
+LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S %Z"
 
 
 def configure_logging() -> logging.Logger:
@@ -30,7 +32,7 @@ def configure_logging() -> logging.Logger:
             handler.close()
     if not any(isinstance(handler, logging.FileHandler) and handler.baseFilename == str(LOG_PATH) for handler in logger.handlers):
         handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
-        handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+        handler.setFormatter(logging.Formatter(LOG_FORMAT, LOG_DATE_FORMAT))
         logger.addHandler(handler)
     return logger
 
@@ -62,7 +64,6 @@ def main(page: ft.Page) -> None:
     retrieved_total = 0
     retrieved_group = ""
     pending_retrieval = False
-    export_root = settings.get("export_root_path", "")
     manifest_created_at: datetime | None = None
     run_log_handler: logging.FileHandler | None = None
     active_log_path = LOG_PATH
@@ -84,8 +85,9 @@ def main(page: ft.Page) -> None:
     )
     output_field = ft.TextField(
         label="Destination folder",
-        hint_text="Folder for CollectionBuilder metadata and objects",
-        value=settings.get("output_path", ""),
+        hint_text="e.g. /Volumes/DGIngest/.GEMS-data; subfolders are named from the set, collection, or MMS IDs",
+        value=settings.get("export_root_path", ""),
+        on_change=lambda _: update_settings(),
         expand=True,
     )
     mapping_field = ft.TextField(
@@ -166,13 +168,12 @@ def main(page: ft.Page) -> None:
         save_settings(
             {
                 "source_path": source_field.value or "",
-                "output_path": output_field.value or "",
                 "field_map_path": mapping_field.value or "",
                 "alma_set_selection": alma_set_field.value or "",
                 "alma_mms_ids": alma_ids_field.value or "",
                 "start_record": start_field.value or "1",
                 "record_limit": limit_field.value or "",
-                "export_root_path": export_root,
+                "export_root_path": output_field.value or "",
             }
         )
 
@@ -201,14 +202,20 @@ def main(page: ft.Page) -> None:
         update_settings()
         report("Field map cleared")
 
+    def destination_root() -> Path:
+        raw = (output_field.value or "").strip()
+        if not raw or not Path(raw).is_dir():
+            raise ValueError("Choose an existing destination folder before using button 1.")
+        return Path(raw)
+
     def save_retrieved_manifest(parent: Path) -> None:
-        nonlocal run_log_handler, active_log_path, export_root, pending_retrieval
+        nonlocal run_log_handler, active_log_path, pending_retrieval
         report("Saving Alma manifest...")
         try:
             slug = re.sub(r"[^a-z0-9]+", "-", retrieved_title.lower()).strip("-")[:40].strip("-") or "collection"
             group_dir = parent / retrieved_group
             group_dir.mkdir(exist_ok=True)
-            run_name = f"{manifest_created_at:%Y-%m-%d_%H-%M-%S_UTC}"
+            run_name = f"{manifest_created_at:%Y-%m-%d_%H-%M-%S_%Z}"
             run_dir = group_dir / run_name
             suffix = 1
             while True:
@@ -235,7 +242,7 @@ def main(page: ft.Page) -> None:
                 payload["alma_collection_pid"] = retrieved_collection_id
             manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
             handler = logging.FileHandler(run_dir / "gems.log", encoding="utf-8")
-            handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+            handler.setFormatter(logging.Formatter(LOG_FORMAT, LOG_DATE_FORMAT))
             close_run_log()
             logger.addHandler(handler)
             run_log_handler = handler
@@ -246,23 +253,16 @@ def main(page: ft.Page) -> None:
                 retrieved_start, retrieved_total,
             )
             source_field.value = str(manifest_path)
-            output_field.value = str(run_dir)
-            export_root = str(parent)
             pending_retrieval = False
             update_settings()
             report(f"Saved {len(alma_records)} Alma record(s) to {run_dir}. Ready to map and export.", success=True)
         except Exception as exc:  # pragma: no cover - UI feedback wrapper
             report(f"Alma manifest export failed: {exc}", error=True)
 
-    def on_manifest_save(event: ft.FilePickerResultEvent) -> None:
-        if event.path:
-            save_retrieved_manifest(Path(event.path))
-
     source_picker = ft.FilePicker(on_result=on_source_pick)
     output_picker = ft.FilePicker(on_result=on_output_pick)
     mapping_picker = ft.FilePicker(on_result=on_mapping_pick)
-    manifest_picker = ft.FilePicker(on_result=on_manifest_save)
-    page.overlay.extend([source_picker, output_picker, mapping_picker, manifest_picker])
+    page.overlay.extend([source_picker, output_picker, mapping_picker])
 
     def load_field_map() -> dict[str, str]:
         field_map = json.loads(Path(mapping_field.value).read_text(encoding="utf-8")) if mapping_field.value else {}
@@ -276,19 +276,19 @@ def main(page: ft.Page) -> None:
         nonlocal manifest_created_at
         try:
             if pending_retrieval:
-                if not export_root:
-                    raise ValueError("Use button 1 to choose a parent folder for this retrieval first.")
-                manifest_created_at = datetime.now(timezone.utc)
-                save_retrieved_manifest(Path(export_root))
+                root = destination_root()
+                manifest_created_at = datetime.now().astimezone()
+                save_retrieved_manifest(root)
                 if pending_retrieval:
                     return
             report("Mapping and exporting manifest...")
-            if not source_field.value or not output_field.value:
-                raise ValueError("Choose both an export file and a destination folder.")
+            if not source_field.value:
+                raise ValueError("Choose a prepared export manifest.")
             field_map = load_field_map()
+            manifest_path = Path(source_field.value)
             result = process_export(
-                Path(source_field.value),
-                Path(output_field.value),
+                manifest_path,
+                manifest_path.parent,
                 field_map=field_map,
             )
             update_settings()
@@ -381,13 +381,10 @@ def main(page: ft.Page) -> None:
         try:
             if not alma_records:
                 raise ValueError("Retrieve Alma records before exporting.")
+            root = destination_root()
             close_run_log()
-            manifest_created_at = datetime.now(timezone.utc)
-            report("Choose a parent folder for the Alma export...")
-            manifest_picker.get_directory_path(
-                dialog_title="Choose a parent folder for the Alma export",
-                initial_directory=export_root or None,
-            )
+            manifest_created_at = datetime.now().astimezone()
+            save_retrieved_manifest(root)
         except Exception as exc:  # pragma: no cover - UI feedback wrapper
             report(f"Alma manifest export failed: {exc}", error=True)
 
@@ -405,13 +402,25 @@ def main(page: ft.Page) -> None:
                     ft.Row([alma_set_field, ft.FilledButton("Retrieve", icon=ft.Icons.DOWNLOAD, on_click=fetch_alma_records)]),
                     alma_ids_field,
                     ft.Row([start_field, limit_field]),
+                    ft.Row(
+                        [
+                            output_field,
+                            ft.IconButton(
+                                icon=ft.Icons.FOLDER_OPEN,
+                                tooltip="Choose destination folder",
+                                on_click=lambda _: output_picker.get_directory_path(
+                                    initial_directory=output_field.value or None,
+                                ),
+                            ),
+                        ]
+                    ),
                     ft.FilledButton(
                         "1) Export Alma Records to JSON Manifest",
                         icon=ft.Icons.ARCHIVE,
                         on_click=export_alma_records,
                     ),
                     ft.Divider(),
-                    ft.Text("Export", size=20, weight=ft.FontWeight.W_600),
+                    ft.Text("Map Manifest to CSV", size=20, weight=ft.FontWeight.W_600),
                     ft.Row(
                         [
                             source_field,
@@ -425,18 +434,6 @@ def main(page: ft.Page) -> None:
                             ),
                         ]
                     ),
-                    ft.Row(
-                        [
-                            output_field,
-                            ft.IconButton(
-                                icon=ft.Icons.FOLDER_OPEN,
-                                tooltip="Choose destination folder",
-                                on_click=lambda _: output_picker.get_directory_path(),
-                            ),
-                        ]
-                    ),
-                    ft.Divider(),
-                    ft.Text("Metadata mapping", size=20, weight=ft.FontWeight.W_600),
                     ft.Row(
                         [
                             mapping_field,
