@@ -24,6 +24,9 @@ Each entry in `rules` is keyed by an output column. Columns without a rule are l
 | `strip_html` | Remove HTML tags and decode entities. |
 | `capitalize` | Upper-case the first letter of each value. |
 | `child` | Rule for compound-object child rows: `"inherit"` (same rule), a rule object, or omitted (blank for children). |
+| `fallback` | A rule (usually `{"from": "mods.<key>"}`) used **only when every `from` source is empty in Alma** before any filtering. `mods.*` sources are rejected anywhere else, so legacy data can never override or be merged with Alma data. A rule with only a `fallback` always uses it. |
+
+`mods.*` values come from the record's legacy Digital Grinnell MODS file (see D7): `extent`, `form`, `genre`, `creator_personal`, `creator_corporate`, `contributor_personal`, `contributor_corporate`.
 
 `gems.*` values: `objectid`, `parentid`, `display_template`, `filename` (own file; blank on a compound parent), `filenames` (all files for the row), `label` (Alma representation label), `representation_id`, `mime_type`, `dcmi_type`.
 
@@ -39,6 +42,12 @@ Each entry in `rules` is keyed by an output column. Columns without a rule are l
   - IDs are assigned on the first **Map and Export** and saved back into the manifest: `objectid` on each record, and `child_objectids` (keyed by filename) for compound children. Re-mapping the same manifest reuses them.
   - Prepared manifests without a `collection_title`, or CSV manifests, get bare `dg_<n>` IDs. CSV IDs aren't saved.
 - **D6. DART supplies hosting fields.** `object_location`, `image_small`, and `image_thumb` are left blank for DART to fill.
+- **D7. Legacy MODS fills gaps only; Alma always wins.** Records were edited in Alma after migration. For example, `grinnell:184`'s MODS still says "Copyright…" while Alma now says "Public Domain".
+  - When **Legacy MODS folder** is set (e.g. OneDrive `Shared with Everyone/DG-Exports`), a record's MODS file is located from its legacy PID (`dc:identifier` `grinnell:<n>`) and the `dginfo` directory name: `<folder>/social-justice/grinnell_<n>_MODS.xml`, else `<folder>/grinnell_<n>_MODS.xml`.
+  - The file is read only if some column's fallback is actually needed.
+  - "Empty" is judged on the column's Alma source elements, not the column. For example, if Alma's `dc:creator` holds only an organization, `creator_personal` stays blank rather than taking a person from MODS.
+  - MODS names are grouped as creators (roles author, creator, photographer, artist) or contributors (all other roles, e.g. `supporting host`), and split by MODS `type` (`personal`/`corporate`).
+  - Only parent/single rows use fallbacks; compound children don't.
 
 ## Column decisions
 
@@ -52,21 +61,23 @@ Each entry in `rules` is keyed by an output column. Columns without a rule are l
 | object_location, image_small, image_thumb | — | Filled by DART (D6). |
 | image_alt_text, thumb_focus | — | CollectionBuilder falls back to description/title for alt text. |
 | title | `dc:title`, else `dcterms:title`; children: representation label, else filename | Representation labels are the legacy child titles. |
-| creator_personal / creator_org | `dc:creator` + `dcterms:creator` (combined), split by a personal-name regex | DC doesn't distinguish persons from organizations. Values shaped like LC personal names (`Surname, Forename…`, optional second surname word) are treated as persons; everything else as organizations. Multi-word surnames beyond two words (e.g. `Van Der Berg, …`) will be misfiled as organizations. |
+| creator_personal / creator_org | `dc:creator` + `dcterms:creator` (combined), split by a personal-name regex; fallback: MODS personal / corporate creators | DC doesn't distinguish persons from organizations. Values shaped like LC personal names (`Surname, Forename…`, optional second surname word) are treated as persons; everything else as organizations. Multi-word surnames beyond two words (e.g. `Van Der Berg, …`) will be misfiled as organizations. MODS only when Alma has no creator at all (D7). |
 | interviewee, interviewer | — | No source element. |
 | date | `dcterms:created`, else `dc:date`, else `dcterms:date` | The column is "Date Created", and `dcterms:created` is a clean year. |
 | Time Period | `dcterms:temporal` | e.g. `Eighteen fifties`. |
 | description | `dcterms:abstract`, else `dc:description`/`dcterms:description` (not split) | |
 | Subject (Topic) / Subject (Person) | `dcterms:subject (dcterms:LCSH)` + untyped `dcterms:subject` (combined), split by the same personal-name regex | e.g. `Brown, John, 1800-1859` → Person. `dc:subject` is deliberately excluded: in this collection it holds legacy alternate titles (identical to `oldalttitle`), not subjects. |
 | Subject (Organization) | — | Can't be reliably separated from topics in DC (Q4). |
-| contributor_personal / contributor_org | `dc:contributor` + `dcterms:contributor` (combined), personal-name regex | Same approach as creator. |
+| contributor_personal / contributor_org | `dc:contributor` + `dcterms:contributor` (combined), personal-name regex; fallback: MODS personal / corporate contributors | Same approach as creator. |
 | location | `dcterms:spatial` | |
 | latitude, longitude | — | No source element. |
 | lanugage | `dc:language` + `dcterms:language` (combined) | The column name keeps the template's spelling (`lanugage`) so it matches the site's CSV. |
 | source, provenance, Call Number, Archival Series, Box, Folder Title, Folder Number, Finding Aid Permalink | — | No source element in the sample. |
 | Contributing Institution | constant `Grinnell College Libraries` | Every sample item is held by the Libraries. Confirm the wording (Q5). |
 | publisher | `dcterms:publisher` + `dc:publisher` (combined) | |
-| extent, medium, genre | — | No source element. |
+| extent | `dcterms:extent`; fallback: MODS `physicalDescription/extent` | Alma DC has no extent for this collection, so MODS supplies it (e.g. `1 leaf`, `24 photographs`). |
+| medium | `dcterms:medium`; fallback: MODS `physicalDescription/form` | MODS `form` describes the physical carrier (`paper`, `cardboard mounted photograph`). |
+| genre | fallback only: MODS `genre` | Alma DC has no genre element. |
 | type | `dcterms:type (dcterms:DCMIType)`, else `gems.dcmi_type`. Children: `gems.dcmi_type` | Uses Alma's DCMI vocabulary values (`Text`, `Still Image`). GEMS's computed values use the same labels. Compound parents have no DCMIType, so they take their children's shared type. |
 | format | `gems.mime_type` | CollectionBuilder expects a MIME type. `dc:format` values (`born digital`, `reformated digital`) describe digital origin, not file format. |
 | Digital Collection Title | `dcterms:isPartOf` without `Digital Grinnell` | `Digital Grinnell` is the whole repository, not a collection. |
@@ -104,6 +115,7 @@ Add new entries at the top. Record the date, the column(s), what changed in the 
 
 | Date | Column(s) | Decision | Reason |
 | --- | --- | --- | --- |
+| 2026-10-01 | extent, medium, genre, creator_*, contributor_* | Added legacy MODS `fallback` rules and the **Legacy MODS folder** setting (D7). | Fill gaps from the pre-migration records without overriding post-migration edits in Alma. |
 | 2026-10-01 | all metadata-sourced columns | Sources switched to qualified keys (`dc:*`, `dcterms:*`, with `xsi:type`). Added `combine`. Subjects now come only from `dcterms:subject`; `type` from `dcterms:type (dcterms:DCMIType)`. | GEMS previously merged `dc:` and `dcterms:` elements and dropped `xsi:type`, which mixed alternate titles into subjects and legacy types into DCMI types. |
 | 2026-09-30 | objectid, parentid | `objectid` is `<slug>_dg_<n>`, persisted in the manifest (D5). Resolves Q1. | Matches site convention. |
 | 2026-09-30 | object_location, image_small, image_thumb | Rules removed; left blank (D6). Resolves Q2, Q3. | DART defines hosting and derivative fields. |

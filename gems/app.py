@@ -98,6 +98,13 @@ def main(page: ft.Page) -> None:
         read_only=True,
         expand=True,
     )
+    legacy_mods_field = ft.TextField(
+        label="Legacy MODS folder (optional)",
+        hint_text="e.g. DG-Exports; only fills fields that are empty in Alma",
+        value=settings.get("legacy_mods_path", ""),
+        on_change=lambda _: update_settings(),
+        expand=True,
+    )
     alma_set_field = ft.TextField(
         label="Alma Set ID or Collection Title",
         hint_text="Numeric set ID or exact collection title",
@@ -170,6 +177,7 @@ def main(page: ft.Page) -> None:
             {
                 "source_path": source_field.value or "",
                 "field_map_path": mapping_field.value or "",
+                "legacy_mods_path": legacy_mods_field.value or "",
                 "alma_set_selection": alma_set_field.value or "",
                 "alma_mms_ids": alma_ids_field.value or "",
                 "start_record": start_field.value or "1",
@@ -202,6 +210,12 @@ def main(page: ft.Page) -> None:
         mapping_field.value = ""
         update_settings()
         report("Field map cleared")
+
+    def on_legacy_mods_pick(event: ft.FilePickerResultEvent) -> None:
+        if event.path:
+            legacy_mods_field.value = event.path
+            update_settings()
+            report(f"Selected legacy MODS folder: {legacy_mods_field.value}")
 
     def destination_root() -> Path:
         raw = (output_field.value or "").strip()
@@ -263,7 +277,8 @@ def main(page: ft.Page) -> None:
     source_picker = ft.FilePicker(on_result=on_source_pick)
     output_picker = ft.FilePicker(on_result=on_output_pick)
     mapping_picker = ft.FilePicker(on_result=on_mapping_pick)
-    page.overlay.extend([source_picker, output_picker, mapping_picker])
+    legacy_mods_picker = ft.FilePicker(on_result=on_legacy_mods_pick)
+    page.overlay.extend([source_picker, output_picker, mapping_picker, legacy_mods_picker])
 
     def load_field_map() -> dict[str, Any]:
         field_map = json.loads(Path(mapping_field.value).read_text(encoding="utf-8")) if mapping_field.value else {}
@@ -291,10 +306,14 @@ def main(page: ft.Page) -> None:
                 raise ValueError("Choose a prepared export manifest.")
             field_map = load_field_map()
             manifest_path = Path(source_field.value)
+            legacy_mods = (legacy_mods_field.value or "").strip()
+            if legacy_mods and not Path(legacy_mods).is_dir():
+                raise ValueError(f"Legacy MODS folder not found: {legacy_mods}")
             result = process_export(
                 manifest_path,
                 manifest_path.parent,
                 field_map=field_map,
+                legacy_mods_dir=legacy_mods or None,
             )
             update_settings()
             report(
@@ -454,6 +473,18 @@ def main(page: ft.Page) -> None:
                                 icon=ft.Icons.CLEAR,
                                 tooltip="Clear field map",
                                 on_click=clear_mapping,
+                            ),
+                        ]
+                    ),
+                    ft.Row(
+                        [
+                            legacy_mods_field,
+                            ft.IconButton(
+                                icon=ft.Icons.FOLDER_OPEN,
+                                tooltip="Choose legacy MODS folder",
+                                on_click=lambda _: legacy_mods_picker.get_directory_path(
+                                    initial_directory=legacy_mods_field.value or None,
+                                ),
                             ),
                         ]
                     ),

@@ -17,6 +17,10 @@ def cli() -> int:
         help="JSON mapping of CollectionBuilder fields to source metadata fields",
     )
     parser.add_argument("--source-system", default="alma_digital", help="Label stored in the output CSV")
+    parser.add_argument(
+        "--legacy-mods",
+        help="Folder of legacy Digital Grinnell MODS exports; used only to fill fields empty in Alma",
+    )
     parser.add_argument("--headless", action="store_true", help="Run without starting the Flet UI")
     args = parser.parse_args()
 
@@ -28,6 +32,7 @@ def cli() -> int:
             args.output,
             field_map=json.loads(args.field_map),
             source_system=args.source_system,
+            legacy_mods_dir=args.legacy_mods,
         )
         print(
             f"Exported {result.row_count} row(s), {result.file_count} file(s), "

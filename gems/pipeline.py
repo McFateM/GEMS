@@ -8,11 +8,14 @@ import re
 import shutil
 import time
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, unquote, urlparse
 from urllib.request import urlretrieve
+
+from .mods import LEGACY_PID, find_legacy_mods, read_legacy_mods
 
 COLLECTIONBUILDER_FIELDS = [
     "identifier",
@@ -72,6 +75,7 @@ def process_export(
     *,
     field_map: dict[str, Any] | None = None,
     source_system: str = "alma_digital",
+    legacy_mods_dir: str | Path | None = None,
 ) -> ExportResult:
     source = Path(source_path)
     if is_template_map(field_map) and source.suffix.lower() == ".json":
@@ -89,7 +93,9 @@ def process_export(
             source.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     else:
         records = load_payload(source)
-    return process_records(records, output_dir, field_map=field_map, source_system=source_system)
+    return process_records(
+        records, output_dir, field_map=field_map, source_system=source_system, legacy_mods_dir=legacy_mods_dir
+    )
 
 
 def process_records(
@@ -98,11 +104,14 @@ def process_records(
     *,
     field_map: dict[str, Any] | None = None,
     source_system: str = "alma_digital",
+    legacy_mods_dir: str | Path | None = None,
 ) -> ExportResult:
     destination = Path(output_dir)
     if is_template_map(field_map):
         columns = [str(column) for column in field_map["columns"]]
-        rows, exported_files = map_to_template(records, field_map, destination / "objects")
+        rows, exported_files = map_to_template(
+            records, field_map, destination / "objects", Path(legacy_mods_dir) if legacy_mods_dir else None
+        )
     else:
         columns = COLLECTIONBUILDER_FIELDS
         rows = normalize_records(records, field_map=field_map, source_system=source_system)
@@ -356,6 +365,7 @@ def map_to_template(
     records: list[dict[str, Any]],
     template_map: dict[str, Any],
     objects_dir: Path,
+    legacy_mods_dir: Path | None = None,
 ) -> tuple[list[dict[str, str]], int]:
     """Build one row per record, plus child rows for records with several files (CollectionBuilder compound objects)."""
     columns = [str(column) for column in template_map["columns"]]
@@ -367,6 +377,7 @@ def map_to_template(
     for record in records:
         metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
         record_id = str(record["objectid"])
+        mods = legacy_mods_loader(metadata, legacy_mods_dir)
         items = representation_items(record)
         for item in items:
             if not (objects_dir / item["filename"]).exists():
@@ -384,13 +395,28 @@ def map_to_template(
         else:
             parent = {"display_template": "record"}
         parent.update(objectid=record_id, parentid="")
-        rows.append(build_template_row(columns, rules, record, metadata, parent, child=False))
+        rows.append(build_template_row(columns, rules, record, metadata, parent, mods, child=False))
         if len(items) > 1:
             for item in items:
                 context = file_context(item)
                 context.update(objectid=record["child_objectids"][item["filename"]], parentid=record_id)
-                rows.append(build_template_row(columns, rules, record, metadata, context, child=True))
+                rows.append(build_template_row(columns, rules, record, metadata, context, mods, child=True))
     return rows, count
+
+
+def legacy_mods_loader(metadata: dict[str, Any], legacy_mods_dir: Path | None) -> Callable[[], dict[str, str]]:
+    """Return a cached loader so a record's legacy MODS file is read only if a fallback is actually needed."""
+
+    @cache
+    def load() -> dict[str, str]:
+        if legacy_mods_dir is None:
+            return {}
+        identifiers = stringify(metadata.get("dc:identifier") or metadata.get("identifier")).split(";")
+        pid = next((value.strip() for value in identifiers if LEGACY_PID.match(value.strip())), "")
+        path = find_legacy_mods(legacy_mods_dir, pid, stringify(metadata.get("dginfo")))
+        return read_legacy_mods(path) if path else {}
+
+    return load
 
 
 def representation_items(record: dict[str, Any]) -> list[dict[str, str]]:
@@ -436,6 +462,7 @@ def build_template_row(
     record: dict[str, Any],
     metadata: dict[str, Any],
     gems: dict[str, str],
+    mods: Callable[[], dict[str, str]] = dict,
     *,
     child: bool,
 ) -> dict[str, str]:
@@ -444,21 +471,42 @@ def build_template_row(
         rule = rules.get(column)
         if child and isinstance(rule, dict) and rule.get("child") != "inherit":
             rule = rule.get("child")
-        row[column] = apply_rule(rule, record, metadata, gems) if isinstance(rule, dict) else ""
+        row[column] = apply_rule(rule, record, metadata, gems, mods) if isinstance(rule, dict) else ""
     return row
 
 
-def apply_rule(rule: dict[str, Any], record: dict[str, Any], metadata: dict[str, Any], gems: dict[str, str]) -> str:
+def apply_rule(
+    rule: dict[str, Any],
+    record: dict[str, Any],
+    metadata: dict[str, Any],
+    gems: dict[str, str],
+    mods: Callable[[], dict[str, str]] = dict,
+    *,
+    is_fallback: bool = False,
+) -> str:
     if "value" in rule:
         return stringify(rule["value"])
     sources = rule.get("from", [])
-    scopes = {"metadata": metadata, "record": record, "gems": gems}
-    collected: list[str] = []
-    for source in [sources] if isinstance(sources, str) else sources:
+    sources = [sources] if isinstance(sources, str) else sources
+    scopes: dict[str, Any] = {"metadata": metadata, "record": record, "gems": gems}
+    raw_values: list[str] = []
+    for source in sources:
         scope, _, key = str(source).partition(".")
-        if scope not in scopes:
-            raise ValueError(f"Unknown field map source {source!r}; use metadata.*, record.*, or gems.*")
-        values = transform_values(stringify(scopes[scope].get(key)), rule)
+        if scope == "mods" and not is_fallback:
+            raise ValueError(f"Field map source {source!r} may only be used inside a \"fallback\" rule.")
+        if scope == "mods":
+            raw_values.append(stringify(mods().get(key)))
+        elif scope in scopes:
+            raw_values.append(stringify(scopes[scope].get(key)))
+        else:
+            raise ValueError(f"Unknown field map source {source!r}; use metadata.*, record.*, gems.*, or mods.*")
+    fallback = rule.get("fallback")
+    # Legacy data may only fill gaps: any Alma value for these sources, even one filtered out below, blocks the fallback.
+    if isinstance(fallback, dict) and not any(value.strip() for value in raw_values):
+        return apply_rule(fallback, record, metadata, gems, mods, is_fallback=True)
+    collected: list[str] = []
+    for raw in raw_values:
+        values = transform_values(raw, rule)
         if values and not rule.get("combine"):
             return "; ".join(values)
         seen = {value.casefold() for value in collected}

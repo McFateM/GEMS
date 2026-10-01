@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
 
+from gems.mods import read_legacy_mods
 from gems.pipeline import normalize_records, process_export, process_records
 
 
@@ -184,6 +185,45 @@ class PipelineTests(unittest.TestCase):
             saved = json.loads(manifests[0].read_text(encoding="utf-8"))["records"][0]
             self.assertEqual(first[0], saved["objectid"])
             self.assertEqual(first[1:3], list(saved["child_objectids"].values()))
+
+    def test_legacy_mods_only_fills_columns_whose_alma_sources_are_empty(self):
+        field_map = json.loads((Path(__file__).parent.parent / "maps" / "alma-dc-to-grinnell.json").read_text(encoding="utf-8"))
+        mods_xml = """<mods xmlns="http://www.loc.gov/mods/v3">
+          <name type="personal"><namePart>Sagin, Hannah</namePart><role><roleTerm type="text">creator</roleTerm></role></name>
+          <name type="corporate"><namePart>Grinnell Prize Office</namePart><role><roleTerm type="text">supporting host</roleTerm></role></name>
+          <genre>Conference papers and proceedings</genre>
+          <physicalDescription><extent>1 sheet</extent><form>paper</form></physicalDescription>
+        </mods>"""
+        dginfo = '{/"directory/": /"smb://storage/mediadb/DGingest/Migration-to-Alma/exports/social-justice//"}'
+        with tempfile.TemporaryDirectory() as tmpdir:
+            legacy = Path(tmpdir) / "legacy"
+            (legacy / "social-justice").mkdir(parents=True)
+            (legacy / "social-justice" / "grinnell_7_MODS.xml").write_text(mods_xml, encoding="utf-8")
+            records = [{"mms_id": "991", "metadata": {
+                "dc:identifier": "grinnell:7", "dginfo": dginfo,
+                "dc:creator": "Des Moines Register", "dc:contributor": "", "dcterms:medium": "glass plate",
+            }}]
+
+            with patch("gems.pipeline.read_legacy_mods", wraps=read_legacy_mods) as reader:
+                result = process_records(records, Path(tmpdir) / "out", field_map=field_map, legacy_mods_dir=legacy)
+                self.assertEqual(1, reader.call_count)
+            with result.csv_path.open("r", encoding="utf-8", newline="") as handle:
+                row = next(csv.DictReader(handle))
+
+            # Alma has a creator, so MODS names never displace or supplement it, even in the empty personal column.
+            self.assertEqual(("Des Moines Register", ""), (row["creator_org"], row["creator_personal"]))
+            self.assertEqual("glass plate", row["medium"])
+            self.assertEqual(("", "Grinnell Prize Office"), (row["contributor_personal"], row["contributor_org"]))
+            self.assertEqual(("1 sheet", "Conference papers and proceedings"), (row["extent"], row["genre"]))
+
+            with patch("gems.pipeline.read_legacy_mods") as reader:
+                process_records(records, Path(tmpdir) / "out2", field_map=field_map)
+                reader.assert_not_called()
+
+    def test_mods_sources_are_rejected_outside_fallback(self):
+        field_map = {"columns": ["extent"], "rules": {"extent": {"from": "mods.extent"}}}
+        with tempfile.TemporaryDirectory() as tmpdir, self.assertRaisesRegex(ValueError, "only be used inside a \"fallback\""):
+            process_records([{"mms_id": "1", "metadata": {}}], Path(tmpdir), field_map=field_map)
 
     def test_template_mapping_reuses_downloaded_objects_and_explains_expired_links(self):
         field_map = {"columns": ["objectid"], "rules": {"objectid": {"from": "gems.objectid"}}}

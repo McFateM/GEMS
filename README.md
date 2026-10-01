@@ -82,7 +82,7 @@ python -m gems \
   --field-map '{"title": "display title", "creator": "creator name"}'
 ```
 
-A field map may instead be a *template map*: a JSON object with an ordered `columns` list and per-column `rules`. It writes a CSV with exactly those columns, including compound-object parent/child rows. [maps/alma-dc-to-grinnell.json](maps/alma-dc-to-grinnell.json) targets the Grinnell CollectionBuilder template. Its rule syntax and mapping decisions are documented in [maps/alma-dc-to-grinnell.md](maps/alma-dc-to-grinnell.md). Headless: `--field-map "$(cat maps/alma-dc-to-grinnell.json)"`.
+A field map may instead be a *template map*: a JSON object with an ordered `columns` list and per-column `rules`. It writes a CSV with exactly those columns, including compound-object parent/child rows. [maps/alma-dc-to-grinnell.json](maps/alma-dc-to-grinnell.json) targets the Grinnell CollectionBuilder template. Its rule syntax and mapping decisions are documented in [maps/alma-dc-to-grinnell.md](maps/alma-dc-to-grinnell.md). Headless: `--field-map "$(cat maps/alma-dc-to-grinnell.json)"`. Optionally set **Legacy MODS folder** (headless: `--legacy-mods /path/to/DG-Exports`) so the map can fill fields that are empty in Alma from the legacy Digital Grinnell MODS files. Values present in Alma are never overridden.
 
 The export writes:
 - `/path/to/output/collection_metadata.csv`
