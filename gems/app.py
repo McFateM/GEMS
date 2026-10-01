@@ -317,10 +317,17 @@ def main(page: ft.Page) -> None:
                 refresh_source=AlmaClient().refresh_file_link,
             )
             update_settings()
+            for name in result.renamed_files:
+                logger.warning("Renamed to avoid a filename clash with a different Alma file: %s", name)
+            renamed_note = (
+                f" {len(result.renamed_files)} file(s) shared a name with a different file and were saved with their "
+                "Alma file ID appended; see the activity log."
+                if result.renamed_files else ""
+            )
             report(
                 f"Mapped records {result.first_record}–{result.last_record} of {result.total_records}: "
                 f"{result.file_count} file(s); CSV now has {result.row_count} row(s). "
-                f"Results saved to {result.csv_path.parent}",
+                f"Results saved to {result.csv_path.parent}.{renamed_note}",
                 success=True,
             )
         except Exception as exc:  # pragma: no cover - UI feedback wrapper

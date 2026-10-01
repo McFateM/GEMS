@@ -7,8 +7,9 @@ import mimetypes
 import re
 import shutil
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cache
+from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 from urllib.error import HTTPError
@@ -71,6 +72,7 @@ class ExportResult:
     first_record: int = 1
     last_record: int = 0
     total_records: int = 0
+    renamed_files: list[str] = field(default_factory=list)
 
 
 RefreshSource = Callable[[dict[str, Any], dict[str, str]], str]
@@ -88,6 +90,7 @@ def process_export(
     refresh_source: RefreshSource | None = None,
 ) -> ExportResult:
     source = Path(source_path)
+    renamed: list[str] = []
     if is_template_map(field_map) and source.suffix.lower() == ".json":
         payload = json.loads(source.read_text(encoding="utf-8"))
         records = iter_records(payload)
@@ -99,14 +102,17 @@ def process_export(
                     used += used_dg_numbers(iter_records(json.loads(sibling.read_text(encoding="utf-8"))))
                 except (OSError, ValueError):
                     continue
-        if assign_objectids(records, prefix, used) and isinstance(payload, dict):
+        renamed = resolve_filename_clashes(records)
+        if (assign_objectids(records, prefix, used) or renamed) and isinstance(payload, dict):
             source.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     else:
         records = load_payload(source)
-    return process_records(
+    result = process_records(
         records, output_dir, field_map=field_map, source_system=source_system, legacy_mods_dir=legacy_mods_dir,
         start=start, limit=limit, refresh_source=refresh_source,
     )
+    result.renamed_files = renamed + result.renamed_files
+    return result
 
 
 def process_records(
@@ -128,8 +134,10 @@ def process_records(
     destination = Path(output_dir)
     csv_path = destination / "collection_metadata.csv"
     json_path = destination / "normalized_records.json"
+    renamed_files: list[str] = []
     if is_template_map(field_map):
         columns = [str(column) for column in field_map["columns"]]
+        renamed_files = resolve_filename_clashes(records)
         check_unique_filenames(records)
         assign_objectids(records, "", used_dg_numbers(records))
         rows, exported_files = map_to_template(
@@ -154,6 +162,7 @@ def process_records(
         first_record=start,
         last_record=start - 1 + len(selected),
         total_records=len(records),
+        renamed_files=renamed_files,
     )
 
 
@@ -518,6 +527,7 @@ def representation_items(record: dict[str, Any]) -> list[dict[str, str]]:
             if file_info.get("label"):
                 by_label.setdefault(str(file_info["label"]), []).append(detail)
     items = []
+    overrides = record.get("gems_filenames") if isinstance(record.get("gems_filenames"), dict) else {}
     for index, file_info in enumerate(extract_files(record), start=1):
         labelled = by_label.get(file_info["filename"], [])
         detail = by_source.get(file_info["source"]) or (labelled[0] if len(labelled) == 1 else {})
@@ -526,11 +536,36 @@ def representation_items(record: dict[str, Any]) -> list[dict[str, str]]:
         items.append({
             "source": file_info["source"],
             **{key: value for key, value in detail.items() if key != "stored_name"},
-            "filename": safe_filename(name, index),
+            "filename": overrides.get(detail.get("file_pid") or file_info["source"]) or safe_filename(name, index),
         })
     return sorted(items, key=lambda item: [
         int(token) if token.isdigit() else token.lower() for token in re.split(r"(\d+)", item["filename"])
     ])
+
+
+def resolve_filename_clashes(records: list[dict[str, Any]]) -> list[str]:
+    """Rename later files that share a name with an earlier, different file; returns the new names.
+
+    The first file in manifest order keeps its name; others get their Alma file ID appended, recorded in the
+    record's `gems_filenames` so names stay stable across batches.
+    """
+    owners: dict[str, str] = {}
+    renamed: list[str] = []
+    for record in records:
+        for item in representation_items(record):
+            key = item.get("file_pid") or item["source"]
+            if owners.setdefault(item["filename"], key) == key:
+                continue
+            stem, dot, extension = item["filename"].rpartition(".")
+            suffix = item.get("file_pid") or sha256(item["source"].encode("utf-8")).hexdigest()[:12]
+            new_name = f"{stem}_{suffix}.{extension}" if dot else f"{item['filename']}_{suffix}"
+            overrides = record.get("gems_filenames")
+            if not isinstance(overrides, dict):
+                overrides = record["gems_filenames"] = {}
+            overrides[key] = new_name
+            owners[new_name] = key
+            renamed.append(new_name)
+    return renamed
 
 
 def check_unique_filenames(records: list[dict[str, Any]]) -> None:

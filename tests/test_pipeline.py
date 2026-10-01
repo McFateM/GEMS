@@ -309,8 +309,58 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual("v2", representation_items(records[1])[0]["file_pid"])
 
             records[1]["representations"][0]["files"]["representation_file"][0]["path"] = "store/z/grinnell_1_MEDIATRACK.vtt"
-            with self.assertRaisesRegex(ValueError, "same name \\(grinnell_1_MEDIATRACK.vtt\\)"):
-                process_records(records, tmp / "out2", field_map=field_map)
+            result = process_records(records, tmp / "out2", field_map=field_map)
+            self.assertEqual(["grinnell_1_MEDIATRACK_v2.vtt"], result.renamed_files)
+            self.assertEqual("captions 2", (tmp / "out2" / "objects" / "grinnell_1_MEDIATRACK_v2.vtt").read_text(encoding="utf-8"))
+            self.assertEqual("captions 1", (tmp / "out2" / "objects" / "grinnell_1_MEDIATRACK.vtt").read_text(encoding="utf-8"))
+
+    def test_same_named_files_are_renamed_once_and_kept_stable_in_the_manifest(self):
+        field_map = {"columns": ["objectid", "parentid", "original_file_name"], "rules": {
+            "objectid": {"from": "gems.objectid", "child": "inherit"},
+            "parentid": {"from": "gems.parentid", "child": "inherit"},
+            "original_file_name": {"from": "gems.filename", "child": "inherit"},
+        }}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+
+            def file_entry(record_id, pid, name, content):
+                path = tmp / f"{pid}.bin"
+                path.write_text(content, encoding="utf-8")
+                return ({"id": f"rep-{pid}", "files": {"representation_file": [
+                    {"pid": pid, "label": name, "url": str(path), "path": f"store/{pid}/{name}"}]}},
+                    {"source": str(path), "filename": name})
+
+            def record(mms_id, *files):
+                return {"mms_id": mms_id, "representations": [rep for rep, _ in files], "files": [entry for _, entry in files]}
+
+            records = [
+                # Two different scans with the same name in one record.
+                record("991", file_entry("991", "p1", "991.jpg", "front"), file_entry("991", "p2", "991.jpg", "back")),
+                # The same image in a compound record and in its own record.
+                record("992", file_entry("992", "p3", "g_1_OBJ.jpg", "photo"), file_entry("992", "p4", "g_2_OBJ.jpg", "other")),
+                record("993", file_entry("993", "p5", "g_1_OBJ.jpg", "photo")),
+            ]
+            group = tmp / "collection-x" / "run"
+            group.mkdir(parents=True)
+            manifest = group / "gems_x_run.json"
+            manifest.write_text(json.dumps({"collection_title": "X", "records": records}), encoding="utf-8")
+
+            result = process_export(manifest, group, field_map=field_map)
+
+            self.assertEqual(["991_p2.jpg", "g_1_OBJ_p5.jpg"], result.renamed_files)
+            objects = group / "objects"
+            self.assertEqual(("front", "back"), ((objects / "991.jpg").read_text(), (objects / "991_p2.jpg").read_text()))
+            self.assertEqual("photo", (objects / "g_1_OBJ_p5.jpg").read_text())
+            saved = json.loads(manifest.read_text(encoding="utf-8"))["records"]
+            self.assertEqual({"p2": "991_p2.jpg"}, saved[0]["gems_filenames"])
+            with result.csv_path.open(encoding="utf-8", newline="") as handle:
+                names = [row["original_file_name"] for row in csv.DictReader(handle)]
+            self.assertIn("991_p2.jpg", names)
+            self.assertIn("g_1_OBJ_p5.jpg", names)
+
+            again = process_export(manifest, group, field_map=field_map)
+            self.assertEqual([], again.renamed_files)
+            self.assertEqual(saved, json.loads(manifest.read_text(encoding="utf-8"))["records"])
 
     def test_audio_with_captions_becomes_one_transcript_item(self):
         field_map = json.loads((Path(__file__).parent.parent / "maps" / "alma-dc-to-grinnell.json").read_text(encoding="utf-8"))
