@@ -129,6 +129,13 @@ def main(page: ft.Page) -> None:
         keyboard_type=ft.KeyboardType.NUMBER,
         width=160,
     )
+    prefix_field = ft.TextField(
+        label="ObjectID prefix",
+        hint_text="Site slug for new objectids, e.g. ghm; blank uses the manifest's",
+        value=settings.get("objectid_prefix", ""),
+        on_change=lambda _: update_settings(),
+        width=320,
+    )
     status = ft.Text("Ready", expand=True)
 
     def report(message: str, *, error: bool = False, success: bool = False) -> None:
@@ -179,6 +186,7 @@ def main(page: ft.Page) -> None:
                 "alma_mms_ids": alma_ids_field.value or "",
                 "start_record": start_field.value or "1",
                 "record_limit": limit_field.value or "",
+                "objectid_prefix": prefix_field.value or "",
                 "export_root_path": output_field.value or "",
             }
         )
@@ -315,6 +323,7 @@ def main(page: ft.Page) -> None:
                 start=start,
                 limit=limit,
                 refresh_source=AlmaClient().refresh_file_link,
+                objectid_prefix=(prefix_field.value or "").strip() or None,
                 page=page,
             )
             update_settings()
@@ -484,7 +493,7 @@ def main(page: ft.Page) -> None:
                             ),
                         ]
                     ),
-                    ft.Row([start_field, limit_field]),
+                    ft.Row([start_field, limit_field, prefix_field]),
                     ft.Row(
                         [
                             ft.FilledButton(

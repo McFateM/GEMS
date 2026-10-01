@@ -92,6 +92,7 @@ def process_export(
     start: int = 1,
     limit: int | None = None,
     refresh_source: RefreshSource | None = None,
+    objectid_prefix: str | None = None,
     page: Any | None = None,
 ) -> ExportResult:
     source = Path(source_path)
@@ -99,7 +100,15 @@ def process_export(
     if is_template_map(field_map) and source.suffix.lower() == ".json":
         payload = json.loads(source.read_text(encoding="utf-8"))
         records = iter_records(payload)
-        prefix = slugify(payload.get("objectid_prefix") or payload.get("collection_title") or "") if isinstance(payload, dict) else ""
+        prefix = (
+            slugify(payload.get("objectid_prefix") or payload.get("collection_title") or "")
+            if isinstance(payload, dict) else ""
+        )
+        if objectid_prefix is not None and isinstance(payload, dict):
+            # An explicit prefix (the UI's objectid field) wins and is remembered on the manifest.
+            prefix = slugify(objectid_prefix)
+            if payload.get("objectid_prefix") != prefix:
+                payload["objectid_prefix"] = prefix
         used = used_dg_numbers(records)
         for sibling in source.parent.parent.glob("*/gems_*.json"):
             if sibling.resolve() != source.resolve():
@@ -108,13 +117,14 @@ def process_export(
                 except (OSError, ValueError):
                     continue
         renamed = resolve_filename_clashes(records)
-        if (assign_objectids(records, prefix, used) or renamed) and isinstance(payload, dict):
+        if (assign_objectids(records, prefix, used) or renamed
+                or payload.get("objectid_prefix") == prefix) and isinstance(payload, dict):
             source.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     else:
         records = load_payload(source)
     result = process_records(
         records, output_dir, field_map=field_map, source_system=source_system, legacy_mods_dir=legacy_mods_dir,
-        start=start, limit=limit, refresh_source=refresh_source, page=page,
+        start=start, limit=limit, refresh_source=refresh_source, objectid_prefix=objectid_prefix, page=page,
     )
     result.renamed_files = renamed + result.renamed_files
     return result
@@ -130,6 +140,7 @@ def process_records(
     start: int = 1,
     limit: int | None = None,
     refresh_source: RefreshSource | None = None,
+    objectid_prefix: str | None = None,
     page: Any | None = None,
 ) -> ExportResult:
     if start < 1 or (limit is not None and limit < 1):
@@ -147,7 +158,7 @@ def process_records(
             columns.insert(0, "key")
         renamed_files = resolve_filename_clashes(records)
         check_unique_filenames(records)
-        assign_objectids(records, "", used_dg_numbers(records))
+        assign_objectids(records, slugify(objectid_prefix) if objectid_prefix else "", used_dg_numbers(records))
         rows, exported_files = map_to_template(
             selected, field_map, destination / "objects", Path(legacy_mods_dir) if legacy_mods_dir else None,
             refresh_source,

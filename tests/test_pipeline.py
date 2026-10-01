@@ -235,6 +235,39 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(first[0], saved["objectid"])
             self.assertEqual(first[1:3], list(saved["child_objectids"].values()))
 
+    def test_explicit_objectid_prefix_overrides_and_is_saved(self):
+        field_map = {"columns": ["objectid", "parentid"], "rules": {
+            "objectid": {"from": "gems.objectid", "child": "inherit"},
+            "parentid": {"from": "gems.parentid", "child": "inherit"},
+        }}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            group = Path(tmpdir) / "collection-ghm-1" / "run"
+            group.mkdir(parents=True)
+            for name, mms_id in (("a.jpg", "991"), ("b.jpg", "992")):
+                path = group / name
+                path.write_text("x", encoding="utf-8")
+            manifest = group / "gems_ghm_run.json"
+            manifest.write_text(json.dumps({
+                "collection_title": "Grinnell Historical Museum",
+                "records": [
+                    {"mms_id": "991", "files": [{"source": str(group / "a.jpg"), "filename": "a.jpg"}]},
+                    {"mms_id": "992", "files": [{"source": str(group / "b.jpg"), "filename": "b.jpg"}]},
+                ],
+            }), encoding="utf-8")
+
+            result = process_export(manifest, group, field_map=field_map, objectid_prefix="  GHM Site! ")
+            with result.csv_path.open(encoding="utf-8", newline="") as handle:
+                ids = [row["objectid"] for row in csv.DictReader(handle)]
+            # The typed value is slugified and used for new objectids instead of the collection title.
+            self.assertTrue(all(value.startswith("ghm-site_dg_") for value in ids))
+            # It is saved on the manifest, so later runs reuse it even with the field left blank.
+            saved = json.loads(manifest.read_text(encoding="utf-8"))
+            self.assertEqual("ghm-site", saved["objectid_prefix"])
+
+            again = process_export(manifest, group, field_map=field_map)
+            with again.csv_path.open(encoding="utf-8", newline="") as handle:
+                self.assertEqual(ids, [row["objectid"] for row in csv.DictReader(handle)])
+
     def test_legacy_mods_only_fills_columns_whose_alma_sources_are_empty(self):
         field_map = json.loads((Path(__file__).parent.parent / "maps" / "alma-dc-to-grinnell.json").read_text(encoding="utf-8"))
         mods_xml = """<mods xmlns="http://www.loc.gov/mods/v3">
