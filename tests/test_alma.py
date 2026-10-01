@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from gems.alma import AlmaClient, _extract_dc_metadata
+from gems.alma import AlmaClient, AlmaServerError, _extract_dc_metadata
 
 
 class FakeResponse:
@@ -47,6 +47,26 @@ class FakeSession:
 
 
 class AlmaClientTests(unittest.TestCase):
+    def test_collection_listing_skips_only_entries_that_alma_cannot_serve(self) -> None:
+        client = AlmaClient(api_key="test-key")
+        bad_positions = {1571, 1572}
+
+        def get(path, *, params=None):
+            offset, limit = params["offset"], params["limit"]
+            if any(offset < position <= offset + limit for position in bad_positions):
+                raise AlmaServerError(f"HTTP 500 at offset {offset} (Alma tracking ID T{offset})")
+            last = min(offset + limit, 1910)
+            return {"total_record_count": 1910, "bib": [{"mms_id": str(n)} for n in range(offset + 1, last + 1)]}
+
+        with patch.object(client, "_get", side_effect=get):
+            mms_ids = client.fetch_collection_bibs("81310652980004641")
+
+        self.assertEqual(1908, len(mms_ids))
+        self.assertNotIn("1571", mms_ids)
+        self.assertEqual(["1570", "1573"], mms_ids[1569:1571])
+        self.assertEqual([1571, 1572], client.skipped_positions)
+        self.assertIn("tracking ID T1570", client.skipped_errors[0])
+
     def test_fetches_signed_url_for_representation_file_without_url(self) -> None:
         client = AlmaClient(api_key="test-key")
 

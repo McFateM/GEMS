@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import xml.etree.ElementTree as element_tree
 from collections.abc import Callable, Iterable
 from typing import Any
@@ -16,6 +17,10 @@ REGION_URLS = {
 }
 
 
+class AlmaServerError(RuntimeError):
+    """Alma answered with an HTTP 5xx error."""
+
+
 class AlmaClient:
     """Retrieve Alma Digital metadata using the read-only Bibs and Sets APIs."""
 
@@ -24,6 +29,8 @@ class AlmaClient:
         self.region = region or os.getenv("ALMA_API_REGION", "America")
         self.base_url = REGION_URLS.get(self.region, REGION_URLS["America"])
         self.session = session or requests.Session()
+        self.skipped_positions: list[int] = []
+        self.skipped_errors: list[str] = []
 
     def fetch_set_members(self, set_id: str) -> list[str]:
         members: list[str] = []
@@ -64,18 +71,42 @@ class AlmaClient:
         return str(collection_id), matches[0]["name"].strip()
 
     def fetch_collection_bibs(self, collection_id: str) -> list[str]:
+        """List a collection's MMS IDs, skipping (and recording in `skipped_positions`) entries Alma can't serve."""
+        path = f"/almaws/v1/bibs/collections/{collection_id}/bibs"
+        self.skipped_positions = []
+        self.skipped_errors = []
+
+        def page(offset: int, limit: int) -> tuple[list[Any], int | None]:
+            try:
+                payload = self._get(path, params={"limit": limit, "offset": offset})
+            except AlmaServerError as error:
+                # One bad bib fails its whole page, so narrow down to single entries and skip only those.
+                if limit == 1:
+                    self.skipped_positions.append(offset + 1)
+                    self.skipped_errors.append(str(error))
+                    return [], None
+                step = max(1, limit // 10)
+                bibs: list[Any] = []
+                total: int | None = None
+                for start in range(offset, offset + limit, step):
+                    if total is not None and start >= total:
+                        break
+                    sub_bibs, sub_total = page(start, min(step, offset + limit - start))
+                    bibs.extend(sub_bibs)
+                    total = total if sub_total is None else sub_total
+                return bibs, total
+            bibs = payload.get("bib", [])
+            return (bibs if isinstance(bibs, list) else [bibs] if bibs else []), int(payload.get("total_record_count", 0))
+
         mms_ids: list[str] = []
         offset = 0
         while True:
-            payload = self._get(
-                f"/almaws/v1/bibs/collections/{collection_id}/bibs", params={"limit": 100, "offset": offset}
-            )
-            bibs = payload.get("bib", [])
-            if not isinstance(bibs, list):
-                bibs = [bibs] if bibs else []
+            skipped_before = len(self.skipped_positions)
+            bibs, total = page(offset, 100)
             mms_ids.extend(str(bib["mms_id"]) for bib in bibs if isinstance(bib, dict) and bib.get("mms_id"))
-            offset += len(bibs)
-            if not bibs or offset >= int(payload.get("total_record_count", offset)):
+            advanced = len(bibs) + len(self.skipped_positions) - skipped_before
+            offset += advanced
+            if not advanced or total is None or offset >= total:
                 return mms_ids
 
     def fetch_records(
@@ -90,6 +121,19 @@ class AlmaClient:
                 on_progress(len(records), len(unique_ids))
         return records
 
+    def refresh_file_link(self, record: dict[str, Any], item: dict[str, str]) -> str:
+        """Request a new signed download URL for a manifest file whose stored link has expired."""
+        mms_id, representation_id, file_pid = record.get("mms_id"), item.get("representation_id"), item.get("file_pid")
+        if not (mms_id and representation_id and file_pid):
+            raise ValueError(f"The download link for {item.get('filename')} has expired; retrieve the records again.")
+        details = self._get(
+            f"/almaws/v1/bibs/{mms_id}/representations/{representation_id}/files/{file_pid}", params={"expand": "url"}
+        )
+        url = details.get("download_url") or details.get("url")
+        if not url:
+            raise ValueError(f"Alma returned no download link for {item.get('filename')}.")
+        return str(url)
+
     def _get(self, path: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
         if not self.api_key:
             raise ValueError("ALMA_API_KEY is not configured.")
@@ -102,7 +146,11 @@ class AlmaClient:
         try:
             response.raise_for_status()
         except requests.HTTPError as error:
-            raise RuntimeError(f"Alma API request failed for {path}: HTTP {response.status_code}") from error
+            message = f"Alma API request failed for {path}: HTTP {response.status_code}"
+            if response.status_code >= 500:
+                tracking = re.search(r'"trackingId"\s*:\s*"([^"]+)"', response.text or "")
+                raise AlmaServerError(message + (f" (Alma tracking ID {tracking.group(1)})" if tracking else "")) from error
+            raise RuntimeError(message) from error
         payload = response.json()
         if not isinstance(payload, dict):
             raise RuntimeError(f"Alma API returned an unexpected response for {path}.")

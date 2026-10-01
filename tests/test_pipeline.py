@@ -220,6 +220,59 @@ class PipelineTests(unittest.TestCase):
                 process_records(records, Path(tmpdir) / "out2", field_map=field_map)
                 reader.assert_not_called()
 
+    def test_template_batches_merge_into_one_csv_in_manifest_order(self):
+        field_map = {"columns": ["objectid", "parentid", "title"], "rules": {
+            "objectid": {"from": "gems.objectid", "child": "inherit"},
+            "parentid": {"from": "gems.parentid", "child": "inherit"},
+            "title": {"from": "metadata.dc:title", "child": {"from": "gems.filename"}},
+        }}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            files = []
+            for name in ("p-1.jpg", "p-2.jpg"):
+                (tmp / name).write_text(name, encoding="utf-8")
+                files.append({"source": str(tmp / name), "filename": name})
+            records = [{"mms_id": str(n), "metadata": {"dc:title": f"Title {n}"}} for n in range(1, 5)]
+            records[1]["files"] = files
+            out = tmp / "run"
+
+            def titles() -> list[str]:
+                with (out / "collection_metadata.csv").open(encoding="utf-8", newline="") as handle:
+                    return [row["title"] for row in csv.DictReader(handle)]
+
+            result = process_records(records, out, field_map=field_map, start=3, limit=2)
+            self.assertEqual((3, 4, 4), (result.first_record, result.last_record, result.total_records))
+            self.assertEqual(["Title 3", "Title 4"], titles())
+
+            process_records(records, out, field_map=field_map, start=1, limit=2)
+            self.assertEqual(["Title 1", "Title 2", "p-1.jpg", "p-2.jpg", "Title 3", "Title 4"], titles())
+
+            records[0]["metadata"]["dc:title"] = "Title 1 revised"
+            process_records(records, out, field_map=field_map, start=1, limit=1)
+            self.assertEqual(["Title 1 revised", "Title 2", "p-1.jpg", "p-2.jpg", "Title 3", "Title 4"], titles())
+
+            with self.assertRaisesRegex(ValueError, "Start record 5 exceeds 4 available record"):
+                process_records(records, out, field_map=field_map, start=5)
+
+    def test_expired_alma_links_are_refreshed_before_download(self):
+        field_map = {"columns": ["objectid"], "rules": {"objectid": {"from": "gems.objectid"}}}
+        record = {
+            "mms_id": "991",
+            "representations": [{"id": "rep1", "files": {"representation_file": [{"pid": "f1", "label": "scan.jpg"}]}}],
+            "files": [{"source": "https://example.org/scan.jpg?Expires=1000&Signature=x", "filename": "scan.jpg"}],
+        }
+        refreshed = []
+
+        def refresh(rec, item):
+            refreshed.append((rec["mms_id"], item["representation_id"], item["file_pid"]))
+            return "https://example.org/scan.jpg?Expires=9999999999&Signature=fresh"
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch("gems.pipeline.urlretrieve") as download:
+            download.side_effect = lambda url, path: Path(path).write_text(url, encoding="utf-8")
+            process_records([record], Path(tmpdir), field_map=field_map, refresh_source=refresh)
+            self.assertEqual([("991", "rep1", "f1")], refreshed)
+            self.assertIn("Signature=fresh", download.call_args.args[0])
+
     def test_mods_sources_are_rejected_outside_fallback(self):
         field_map = {"columns": ["extent"], "rules": {"extent": {"from": "mods.extent"}}}
         with tempfile.TemporaryDirectory() as tmpdir, self.assertRaisesRegex(ValueError, "only be used inside a \"fallback\""):

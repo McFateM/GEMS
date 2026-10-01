@@ -67,6 +67,12 @@ class ExportResult:
     csv_path: Path
     json_path: Path
     objects_dir: Path
+    first_record: int = 1
+    last_record: int = 0
+    total_records: int = 0
+
+
+RefreshSource = Callable[[dict[str, Any], dict[str, str]], str]
 
 
 def process_export(
@@ -76,6 +82,9 @@ def process_export(
     field_map: dict[str, Any] | None = None,
     source_system: str = "alma_digital",
     legacy_mods_dir: str | Path | None = None,
+    start: int = 1,
+    limit: int | None = None,
+    refresh_source: RefreshSource | None = None,
 ) -> ExportResult:
     source = Path(source_path)
     if is_template_map(field_map) and source.suffix.lower() == ".json":
@@ -94,7 +103,8 @@ def process_export(
     else:
         records = load_payload(source)
     return process_records(
-        records, output_dir, field_map=field_map, source_system=source_system, legacy_mods_dir=legacy_mods_dir
+        records, output_dir, field_map=field_map, source_system=source_system, legacy_mods_dir=legacy_mods_dir,
+        start=start, limit=limit, refresh_source=refresh_source,
     )
 
 
@@ -105,20 +115,31 @@ def process_records(
     field_map: dict[str, Any] | None = None,
     source_system: str = "alma_digital",
     legacy_mods_dir: str | Path | None = None,
+    start: int = 1,
+    limit: int | None = None,
+    refresh_source: RefreshSource | None = None,
 ) -> ExportResult:
+    if start < 1 or (limit is not None and limit < 1):
+        raise ValueError("Start record and record limit must be positive whole numbers.")
+    if records and start > len(records):
+        raise ValueError(f"Start record {start} exceeds {len(records)} available record(s).")
+    selected = records[start - 1 : start - 1 + limit if limit is not None else None]
     destination = Path(output_dir)
-    if is_template_map(field_map):
-        columns = [str(column) for column in field_map["columns"]]
-        rows, exported_files = map_to_template(
-            records, field_map, destination / "objects", Path(legacy_mods_dir) if legacy_mods_dir else None
-        )
-    else:
-        columns = COLLECTIONBUILDER_FIELDS
-        rows = normalize_records(records, field_map=field_map, source_system=source_system)
-        exported_files = export_files(rows, destination / "objects")
-
     csv_path = destination / "collection_metadata.csv"
     json_path = destination / "normalized_records.json"
+    if is_template_map(field_map):
+        columns = [str(column) for column in field_map["columns"]]
+        assign_objectids(records, "", used_dg_numbers(records))
+        rows, exported_files = map_to_template(
+            selected, field_map, destination / "objects", Path(legacy_mods_dir) if legacy_mods_dir else None,
+            refresh_source,
+        )
+        rows = merge_batch_rows(rows, csv_path, columns, records)
+    else:
+        columns = COLLECTIONBUILDER_FIELDS
+        rows = normalize_records(selected, field_map=field_map, source_system=source_system)
+        exported_files = export_files(rows, destination / "objects")
+
     write_collection_csv(rows, csv_path, columns)
     write_structured_records(rows, json_path)
 
@@ -128,7 +149,36 @@ def process_records(
         csv_path=csv_path,
         json_path=json_path,
         objects_dir=destination / "objects",
+        first_record=start,
+        last_record=start - 1 + len(selected),
+        total_records=len(records),
     )
+
+
+def merge_batch_rows(
+    rows: list[dict[str, str]], csv_path: Path, columns: list[str], records: list[dict[str, Any]]
+) -> list[dict[str, str]]:
+    """Combine this batch's rows with rows from earlier batches in the same CSV, ordered as in the manifest."""
+    if "objectid" not in columns or not csv_path.exists():
+        return rows
+    with csv_path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames != columns:
+            return rows
+        previous = list(reader)
+
+    def grouped(items: list[dict[str, str]]) -> dict[str, list[dict[str, str]]]:
+        groups: dict[str, list[dict[str, str]]] = {}
+        for row in items:
+            groups.setdefault(row.get("parentid") or row["objectid"], []).append(row)
+        return groups
+
+    new, old = grouped(rows), grouped(previous)
+    merged: list[dict[str, str]] = []
+    for record in records:
+        root = str(record.get("objectid"))
+        merged.extend(new[root] if root in new else old.get(root, []))
+    return merged
 
 
 def load_payload(source_path: Path) -> list[dict[str, Any]]:
@@ -315,6 +365,12 @@ def fetch_object(source: str, destination: Path) -> None:
         shutil.copy2(Path(source), destination)
 
 
+def link_expired(source: str, margin_seconds: int = 120) -> bool:
+    """True when a signed URL's `Expires` timestamp has passed or will within the margin."""
+    expires = parse_qs(urlparse(source).query).get("Expires", [""])[0]
+    return expires.isdigit() and int(expires) < time.time() + margin_seconds
+
+
 def is_template_map(field_map: Any) -> bool:
     return isinstance(field_map, dict) and isinstance(field_map.get("columns"), list)
 
@@ -366,6 +422,7 @@ def map_to_template(
     template_map: dict[str, Any],
     objects_dir: Path,
     legacy_mods_dir: Path | None = None,
+    refresh_source: RefreshSource | None = None,
 ) -> tuple[list[dict[str, str]], int]:
     """Build one row per record, plus child rows for records with several files (CollectionBuilder compound objects)."""
     columns = [str(column) for column in template_map["columns"]]
@@ -380,8 +437,12 @@ def map_to_template(
         mods = legacy_mods_loader(metadata, legacy_mods_dir)
         items = representation_items(record)
         for item in items:
-            if not (objects_dir / item["filename"]).exists():
-                fetch_object(item["source"], objects_dir / item["filename"])
+            destination = objects_dir / item["filename"]
+            if not destination.exists():
+                source = item["source"]
+                if refresh_source is not None and link_expired(source):
+                    source = refresh_source(record, item)
+                fetch_object(source, destination)
             count += 1
         if len(items) == 1:
             parent = file_context(items[0])
@@ -430,6 +491,7 @@ def representation_items(record: dict[str, Any]) -> list[dict[str, str]]:
                 details[str(file_info["label"])] = {
                     "label": stringify(representation.get("label")),
                     "representation_id": stringify(representation.get("id")),
+                    "file_pid": stringify(file_info.get("pid")),
                 }
     items = [
         {"source": file_info["source"], **details.get(file_info["filename"], {}),

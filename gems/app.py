@@ -60,8 +60,6 @@ def main(page: ft.Page) -> None:
     retrieved_title = ""
     retrieved_set_id = ""
     retrieved_collection_id = ""
-    retrieved_start = 1
-    retrieved_limit: int | None = None
     retrieved_total = 0
     retrieved_group = ""
     pending_retrieval = False
@@ -245,8 +243,6 @@ def main(page: ft.Page) -> None:
                 "collection_title": retrieved_title,
                 "created_at": manifest_created_at.isoformat(),
                 "retrieval": {
-                    "start_record": retrieved_start,
-                    "record_limit": retrieved_limit,
                     "available_records": retrieved_total,
                 },
                 "records": alma_records,
@@ -263,9 +259,8 @@ def main(page: ft.Page) -> None:
             run_log_handler = handler
             active_log_path = run_dir / "gems.log"
             logger.info(
-                "Manifest contains %s Alma record(s) from %s, starting at %s of %s",
+                "Manifest contains %s Alma record(s) from %s",
                 len(alma_records), retrieved_set_id or retrieved_collection_id or "MMS IDs",
-                retrieved_start, retrieved_total,
             )
             source_field.value = str(manifest_path)
             pending_retrieval = False
@@ -304,38 +299,6 @@ def main(page: ft.Page) -> None:
             report("Mapping and exporting manifest...")
             if not source_field.value:
                 raise ValueError("Choose a prepared export manifest.")
-            field_map = load_field_map()
-            manifest_path = Path(source_field.value)
-            legacy_mods = (legacy_mods_field.value or "").strip()
-            if legacy_mods and not Path(legacy_mods).is_dir():
-                raise ValueError(f"Legacy MODS folder not found: {legacy_mods}")
-            result = process_export(
-                manifest_path,
-                manifest_path.parent,
-                field_map=field_map,
-                legacy_mods_dir=legacy_mods or None,
-            )
-            update_settings()
-            report(
-                f"Export complete: {result.row_count} metadata row(s), {result.file_count} file(s). "
-                f"Results saved to {result.csv_path.parent}",
-                success=True,
-            )
-        except Exception as exc:  # pragma: no cover - UI feedback wrapper
-            report(f"Export failed: {exc}", error=True)
-
-    def fetch_alma_records(_: ft.ControlEvent) -> None:
-        nonlocal alma_records, retrieved_title, retrieved_set_id, retrieved_collection_id
-        nonlocal retrieved_start, retrieved_limit, retrieved_total, retrieved_group, pending_retrieval
-        try:
-            close_run_log()
-            report("Retrieving Alma records...")
-            alma_records = []
-            retrieved_title = ""
-            retrieved_set_id = ""
-            retrieved_collection_id = ""
-            retrieved_group = ""
-            pending_retrieval = False
             try:
                 start = int(start_field.value or "")
             except ValueError as exc:
@@ -348,6 +311,42 @@ def main(page: ft.Page) -> None:
                 raise ValueError("Record limit must be a positive whole number.") from exc
             if limit is not None and limit < 1:
                 raise ValueError("Record limit must be a positive whole number.")
+            field_map = load_field_map()
+            manifest_path = Path(source_field.value)
+            legacy_mods = (legacy_mods_field.value or "").strip()
+            if legacy_mods and not Path(legacy_mods).is_dir():
+                raise ValueError(f"Legacy MODS folder not found: {legacy_mods}")
+            result = process_export(
+                manifest_path,
+                manifest_path.parent,
+                field_map=field_map,
+                legacy_mods_dir=legacy_mods or None,
+                start=start,
+                limit=limit,
+                refresh_source=AlmaClient().refresh_file_link,
+            )
+            update_settings()
+            report(
+                f"Mapped records {result.first_record}–{result.last_record} of {result.total_records}: "
+                f"{result.file_count} file(s); CSV now has {result.row_count} row(s). "
+                f"Results saved to {result.csv_path.parent}",
+                success=True,
+            )
+        except Exception as exc:  # pragma: no cover - UI feedback wrapper
+            report(f"Export failed: {exc}", error=True)
+
+    def fetch_alma_records(_: ft.ControlEvent) -> None:
+        nonlocal alma_records, retrieved_title, retrieved_set_id, retrieved_collection_id
+        nonlocal retrieved_total, retrieved_group, pending_retrieval
+        try:
+            close_run_log()
+            report("Retrieving Alma records...")
+            alma_records = []
+            retrieved_title = ""
+            retrieved_set_id = ""
+            retrieved_collection_id = ""
+            retrieved_group = ""
+            pending_retrieval = False
             client = AlmaClient()
             mms_ids = [value.strip() for value in (alma_ids_field.value or "").replace(",", "\n").splitlines()]
             if mms_ids:
@@ -365,9 +364,11 @@ def main(page: ft.Page) -> None:
                     set_id = ""
                     retrieved_collection_id, title = client.resolve_collection(selection)
                     mms_ids = client.fetch_collection_bibs(retrieved_collection_id)
+                    for error in client.skipped_errors:
+                        logger.warning("Skipped collection entry: %s", error)
             mms_ids = list(dict.fromkeys(value.strip() for value in mms_ids if value.strip()))
-            if start > len(mms_ids):
-                raise ValueError(f"Start record {start} exceeds {len(mms_ids)} available record(s).")
+            if not mms_ids:
+                raise ValueError("No Alma records were found for that selection.")
             total = len(mms_ids)
             slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40].strip("-") or "collection"
             if set_id:
@@ -377,7 +378,6 @@ def main(page: ft.Page) -> None:
             else:
                 digest = sha256(",".join(sorted(mms_ids)).encode("utf-8")).hexdigest()[:12]
                 group = f"mms-ids-{digest}"
-            mms_ids = mms_ids[start - 1 : start - 1 + limit if limit is not None else None]
             last_milestone = 0
 
             def update_progress(completed: int, total: int) -> None:
@@ -390,13 +390,20 @@ def main(page: ft.Page) -> None:
             alma_records = client.fetch_records(mms_ids, on_progress=update_progress)
             retrieved_title = title
             retrieved_set_id = set_id
-            retrieved_start = start
-            retrieved_limit = limit
             retrieved_total = total
             retrieved_group = group
             pending_retrieval = True
             update_settings()
-            report(f"Retrieved {len(alma_records)} Alma record(s), starting at {start} of {total}. Ready to export.", success=True)
+            message = f"Retrieved all {len(alma_records)} Alma record(s). Ready to export."
+            skipped = list(client.skipped_positions)
+            if skipped:
+                positions = ", ".join(str(position) for position in skipped)
+                message += (
+                    f" Alma could not list {len(skipped)} collection entr"
+                    f"{'y' if len(skipped) == 1 else 'ies'} (position {positions}); "
+                    "they were skipped. See the activity log for Alma tracking IDs."
+                )
+            report(message, success=True)
         except Exception as exc:  # pragma: no cover - UI feedback wrapper
             report(f"Alma retrieval failed: {exc}", error=True)
 
@@ -425,7 +432,6 @@ def main(page: ft.Page) -> None:
                     ft.Text("Retrieve from Alma", size=20, weight=ft.FontWeight.W_600),
                     ft.Row([alma_set_field, ft.FilledButton("Retrieve", icon=ft.Icons.DOWNLOAD, on_click=fetch_alma_records)]),
                     alma_ids_field,
-                    ft.Row([start_field, limit_field]),
                     ft.Row(
                         [
                             output_field,
@@ -488,6 +494,7 @@ def main(page: ft.Page) -> None:
                             ),
                         ]
                     ),
+                    ft.Row([start_field, limit_field]),
                     ft.Row(
                         [
                             ft.FilledButton(
