@@ -115,6 +115,8 @@ class PipelineTests(unittest.TestCase):
                     "mms_id": "992", "metadata": {"dc:title": "Clipping", "dc:type": "text", "dcterms:type (dcterms:DCMIType)": "Text"},
                     "files": [{"source": str(tmp / "grinnell_5_OBJ.pdf"), "filename": "grinnell_5_OBJ.pdf"}],
                 },
+                # A metadata-only bib with no files at all.
+                {"mms_id": "993", "metadata": {"dc:title": "Finding aid only"}},
             ]
 
             result = process_records(records, tmp / "out", field_map=field_map)
@@ -124,11 +126,11 @@ class PipelineTests(unittest.TestCase):
                 reader = csv.DictReader(handle)
                 rows = list(reader)
             self.assertEqual(field_map["columns"], reader.fieldnames)
-            parent, first, second, single = rows
+            parent, first, second, single, rec = rows
             self.assertRegex(parent["objectid"], r"^dg_\d{10}$")
             self.assertEqual(("", "compound_object"), (parent["parentid"], parent["display_template"]))
             numbers = [int(row["objectid"].rsplit("_", 1)[1]) for row in rows]
-            self.assertEqual(list(range(numbers[0], numbers[0] + 4)), numbers)
+            self.assertEqual(list(range(numbers[0], numbers[0] + 5)), numbers)
             self.assertEqual("Brown, John, 1800-1859", parent["creator_personal"])
             self.assertEqual("Des Moines Register", parent["creator_org"])
             self.assertEqual(("Slavery", "Brown, John, 1800-1859"), (parent["Subject (Topic)"], parent["Subject (Person)"]))
@@ -138,14 +140,61 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(("grinnell:10", "http://hdl.handle.net/11084/10"), (parent["identifier"], parent["Item Permalink"]))
             self.assertEqual(("Public Domain", "http://rightsstatements.org/vocab/NoC-US/1.0/"), (parent["rights"], parent["Standardized Rights"]))
             self.assertEqual("", parent["image_thumb"])
+            # DART convention: a compound parent's original_file_name is "_" + the first child's name.
+            self.assertEqual("_grinnell_11_OBJ.jpg", parent["original_file_name"])
+            self.assertEqual("grinnell_11_OBJ.jpg; grinnell_12_OBJ.jpg", parent["Filename"])
             self.assertEqual((parent["objectid"], "image"), (first["parentid"], first["display_template"]))
             self.assertEqual(("Photo 11", "rep11", "grinnell:11"), (first["title"], first["originating_system_id"], first["identifier"]))
             self.assertEqual(("", "image/jpeg"), (first["object_location"], first["format"]))
             self.assertEqual("", first["description"])
             self.assertEqual("Public Domain", first["rights"])
-            self.assertEqual(parent["objectid"], second["parentid"])
+            self.assertEqual("grinnell_11_OBJ.jpg", first["original_file_name"])
+            self.assertEqual((parent["objectid"], "grinnell_12_OBJ.jpg"), (second["parentid"], second["original_file_name"]))
             self.assertEqual(("", "pdf", "Text"), (single["parentid"], single["display_template"], single["type"]))
+            # A fileless bib is a 'record' row; its original_file_name borrows the objectid so DART can key it.
+            self.assertEqual(("", "record"), (rec["parentid"], rec["display_template"]))
+            self.assertEqual("_" + rec["objectid"], rec["original_file_name"])
+            self.assertEqual("Finding aid only", rec["title"])
             self.assertTrue((tmp / "out" / "objects" / "grinnell_5_OBJ.pdf").exists())
+
+    def test_compound_parent_borrows_a_web_friendly_child_name(self):
+        field_map = {"columns": ["objectid", "parentid", "display_template", "original_file_name"], "rules": {
+            "objectid": {"from": "gems.objectid", "child": "inherit"},
+            "parentid": {"from": "gems.parentid", "child": "inherit"},
+            "display_template": {"from": "gems.display_template", "child": "inherit"},
+            "original_file_name": {"from": "gems.filename", "child": "inherit"},
+        }}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+
+            def record(mms_id, *names):
+                files = []
+                for name in names:
+                    path = tmp / name
+                    path.write_text(name, encoding="utf-8")
+                    files.append({"source": str(path), "filename": name})
+                return {"mms_id": mms_id, "files": files}
+
+            records = [
+                # The TIFF sorts first naturally, but the parent borrows the JPG.
+                record("991", "2001_scan.tiff", "photo.jpg"),
+                # TIFFs only: the parent borrows the first child.
+                record("992", "b_master.tiff", "a_master.tiff"),
+                # No images at all: the parent borrows the first child.
+                record("993", "doc1.pdf", "doc2.pdf"),
+            ]
+            result = process_records(records, tmp / "out", field_map=field_map)
+
+            self.assertEqual(6, result.file_count)
+            with result.csv_path.open(encoding="utf-8", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            parents = [row for row in rows if row["display_template"] == "compound_object"]
+            self.assertEqual(["_photo.jpg", "_a_master.tiff", "_doc1.pdf"],
+                             [row["original_file_name"] for row in parents])
+            # Child rows stay in natural filename order (the TIFF is still 991's first child).
+            children = [row["original_file_name"] for row in rows if row["parentid"]]
+            self.assertEqual(["2001_scan.tiff", "photo.jpg", "a_master.tiff", "b_master.tiff", "doc1.pdf", "doc2.pdf"],
+                             children)
 
     def test_template_objectids_are_persisted_and_unique_across_batches(self):
         field_map = {"columns": ["objectid", "parentid"], "rules": {

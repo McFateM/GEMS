@@ -28,11 +28,11 @@ Each entry in `rules` is keyed by an output column. Columns without a rule are l
 
 `mods.*` values come from the record's legacy Digital Grinnell MODS file (see D7): `extent`, `form`, `genre`, `creator_personal`, `creator_corporate`, `contributor_personal`, `contributor_corporate`.
 
-`gems.*` values: `key`, `objectid`, `parentid`, `display_template`, `filename` (own file; blank on a compound parent), `filenames` (all files for the row), `label` (Alma representation label), `representation_id`, `mime_type`, `dcmi_type`.
+`gems.*` values: `key`, `objectid`, `parentid`, `display_template`, `filename` (own file; a compound parent takes the first child's name with a `_` prefix — DART's convention, D10), `filenames` (all files for the row), `label` (Alma representation label), `representation_id`, `mime_type`, `dcmi_type`.
 
 ## Row structure
 
-- **D1. One row per Alma bib; compound objects for multi-file bibs.** A bib with one file is one row. A bib with several files becomes a parent row (`display_template` = `compound_object`, no file) plus one child row per file with `parentid` set to the parent's `objectid`. This follows CollectionBuilder's compound-object conventions (`docs/compound_objects.md`). `compound_object` was chosen over `multiple` because Alma representations carry individual labels.
+- **D1. One row per Alma bib; compound objects for multi-file bibs.** A bib with one file is one row. A bib with several files becomes a parent row (`display_template` = `compound_object`, no file of its own) plus one child row per file with `parentid` set to the parent's `objectid`. The parent's `original_file_name` is `_` + a borrowed child filename (D10 picks which), per DART's convention. This follows CollectionBuilder's compound-object conventions (`docs/compound_objects.md`). `compound_object` was chosen over `multiple` because Alma representations carry individual labels.
 - **D2. Children are sorted by natural filename order** (`grinnell_10379…` before `grinnell_10380…`). Alma returns representations in no useful order. The legacy order is in `tableOfContents`/`dginfo`, but it doesn't match the Alma files one-to-one (25 titles vs. 10 files).
 - **D3. Children carry only row-specific metadata.** Following CollectionBuilder guidance, child rows get only the control fields, title, type, format, identifier, filename, rights, and Contributing Institution. Everything descriptive lives on the parent.
 - **D4. `display_template` comes from the file's MIME type**: image → `image`, PDF → `pdf`, audio → `audio`, video → `video`, otherwise `record`. A bib with no files is `record`.
@@ -55,6 +55,8 @@ Each entry in `rules` is keyed by an output column. Columns without a rule are l
   - MODS names are grouped as creators (roles author, creator, photographer, artist) or contributors (all other roles, e.g. `supporting host`), and split by MODS `type` (`personal`/`corporate`).
   - Only parent/single rows use fallbacks; compound children don't.
 
+- **D10. Compound parents use DART's `_`-prefixed filename convention.** DART matches every CSV row to assets by `original_file_name`, so a compound parent — which has no file of its own in Alma — borrows a child's filename with a `_` prefix, e.g. `_grinnell_10379_OBJ.jpg`. The borrowed child is the first whose name is a web-friendly image (`.jpg`, `.jpeg`, `.png`, `.gif`, `.bmp`, `.webp` — never a `.tif`/`.tiff` preservation master), so the derivative DART copies onto the parent comes from the access image; with no such child, the first child in natural filename order is used. Child row order itself stays natural (D2); only the parent's pseudo-name is affected. DART skips `_`-prefixed rows when generating derivatives, then copies the named child's `image_small`/`image_thumb` onto the parent, and its csvdiff and Seeklight merges key on `original_file_name`, so blank parent names mis-diff or are silently dropped. The pseudo-name is only an index key: `objects/` holds only real files. A bib with no files at all (a `record` row) has no child name to borrow, so it uses `_` + its `objectid`. No real filename can start with `_` (`safe_filename` strips leading `.`/`_`), so pseudo-names never collide with files; the DG-with-CB-and-Pagefind site never reads `original_file_name`, so the convention is invisible to visitors.
+
 ## Column decisions
 
 | Column | Source / rule | Rationale |
@@ -63,7 +65,7 @@ Each entry in `rules` is keyed by an output column. Columns without a rule are l
 | objectid | `gems.objectid`: `<slug>_dg_<n>` | See D5. |
 | parentid | `gems.parentid` | Blank except on children. |
 | display_template | `gems.display_template` | See D1/D4. |
-| original_file_name | `gems.filename` | Alma file label, e.g. `grinnell_187_OBJ.jpg`. Blank on compound parents. |
+| original_file_name | `gems.filename` | Alma file label, e.g. `grinnell_187_OBJ.jpg`. Compound parents carry `_` + a borrowed child's name (the first web-friendly image child if there is one, else the first child), and fileless `record` rows `_` + `objectid`, so DART can match every row by filename (D10). |
 | originating_system_id | `record.mms_id`; children: Alma representation ID | Alma is now the system of record; this allows round-trips back to Alma. |
 | object_location, image_small, image_thumb | — | Filled by DART (D6). |
 | image_alt_text, thumb_focus | — | CollectionBuilder falls back to description/title for alt text. |
@@ -122,6 +124,9 @@ Add new entries at the top. Record the date, the column(s), what changed in the 
 
 | Date | Column(s) | Decision | Reason |
 | --- | --- | --- | --- |
+| 2026-10-01 | original_file_name | A compound parent borrows the first JPG-style image child's name rather than a TIFF master when both exist (D10). | The derivative DART copies onto the parent then comes from the lightweight access image, not the preservation master. |
+| 2026-10-01 | original_file_name | Fileless `record` rows get `_` + `objectid` (D10). | Every CSV row now has a non-blank unique match key for DART. |
+| 2026-10-01 | original_file_name | Compound parents get `_` + first child's filename instead of a blank (D10). | DART treats `original_file_name` as the universal match key; blank parent names were skipped by derivative generation and broke csvdiff/Seeklight merges. |
 | 2026-10-01 | key | Added the `key` column and adopted common-DG-utilities key handling (D9). | Every CSV record keeps a stable `dg_<epoch>` identity for life. |
 | 2026-10-01 | display_template, Filename | Audio/video + caption bibs become one `transcript` item with a converted `transcripts/<objectid>.csv` (D8). | Matches the site's `transcript` layout for oral histories (PHPP). |
 | 2026-10-01 | extent, medium, genre, creator_*, contributor_* | Added legacy MODS `fallback` rules and the **Legacy MODS folder** setting (D7). | Fill gaps from the pre-migration records without overriding post-migration edits in Alma. |

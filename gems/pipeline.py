@@ -449,6 +449,20 @@ def maintained_key(record: dict[str, Any], fallback: str) -> str:
     return key if is_valid_key(key) else fallback
 
 
+# DART's image extensions minus tif/tiff: web-friendly access images, not preservation masters.
+PARENT_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
+
+
+def parent_borrowed_name(items: list[dict[str, str]]) -> str:
+    """The filename a compound parent borrows for its `_`-prefixed original_file_name (D10):
+    the first child with a web-friendly image name — never a TIFF master, so the derivative DART
+    copies onto the parent comes from the access image — or simply the first child otherwise."""
+    for item in items:
+        if Path(item["filename"]).suffix.lower() in PARENT_IMAGE_EXTS:
+            return item["filename"]
+    return items[0]["filename"]
+
+
 def map_to_template(
     records: list[dict[str, Any]],
     template_map: dict[str, Any],
@@ -495,11 +509,16 @@ def map_to_template(
             child_types = {file_context(item)["dcmi_type"] for item in items}
             parent = {
                 "display_template": "compound_object",
+                # DART matches every CSV row by original_file_name; a compound parent has no
+                # file of its own in Alma, so it borrows a child's name with a "_" prefix.
+                "filename": f"_{parent_borrowed_name(items)}",
                 "filenames": "; ".join(item["filename"] for item in items),
                 "dcmi_type": child_types.pop() if len(child_types) == 1 else "",
             }
         else:
-            parent = {"display_template": "record"}
+            # A bib with no files is a metadata-only record. DART still matches every row by
+            # original_file_name, so with no child name to borrow, the objectid stands in.
+            parent = {"display_template": "record", "filename": f"_{record_id}"}
         parent.update(objectid=record_id, parentid="", key=maintained_key(record, record_id))
         rows.append(build_template_row(columns, rules, record, metadata, parent, mods, child=False))
         if len(items) > 1:
