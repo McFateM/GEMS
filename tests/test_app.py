@@ -330,6 +330,11 @@ class AppTests(unittest.TestCase):
             self.assertEqual(directory, save_settings.call_args.args[0]["export_root_path"])
             csv_button.on_click(None)
             self.assertTrue((run_dir / "collection_metadata.csv").exists())
+            with (run_dir / "collection_metadata.csv").open(encoding="utf-8", newline="") as handle:
+                reader = csv.DictReader(handle)
+                row = next(reader)
+            self.assertEqual("key", reader.fieldnames[0])
+            self.assertRegex(row["key"], r"^dg_\d+$")
             self.assertTrue((run_dir / "normalized_records.json").exists())
             self.assertEqual("scan data", (run_dir / "objects" / "scan.txt").read_text(encoding="utf-8"))
             log_text = (run_dir / "gems.log").read_text(encoding="utf-8")

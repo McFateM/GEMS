@@ -11,15 +11,19 @@ from dataclasses import dataclass, field
 from functools import cache
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 from typing import Any, Callable
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, unquote, urlparse
 from urllib.request import urlretrieve
 
+from common_dg_utilities import ensure_key, is_valid_key
+
 from .mods import LEGACY_PID, find_legacy_mods, read_legacy_mods
 from .transcripts import is_transcript_file, write_transcript_csv
 
 COLLECTIONBUILDER_FIELDS = [
+    "key",
     "identifier",
     "title",
     "creator",
@@ -88,6 +92,7 @@ def process_export(
     start: int = 1,
     limit: int | None = None,
     refresh_source: RefreshSource | None = None,
+    page: Any | None = None,
 ) -> ExportResult:
     source = Path(source_path)
     renamed: list[str] = []
@@ -109,7 +114,7 @@ def process_export(
         records = load_payload(source)
     result = process_records(
         records, output_dir, field_map=field_map, source_system=source_system, legacy_mods_dir=legacy_mods_dir,
-        start=start, limit=limit, refresh_source=refresh_source,
+        start=start, limit=limit, refresh_source=refresh_source, page=page,
     )
     result.renamed_files = renamed + result.renamed_files
     return result
@@ -125,6 +130,7 @@ def process_records(
     start: int = 1,
     limit: int | None = None,
     refresh_source: RefreshSource | None = None,
+    page: Any | None = None,
 ) -> ExportResult:
     if start < 1 or (limit is not None and limit < 1):
         raise ValueError("Start record and record limit must be positive whole numbers.")
@@ -137,6 +143,8 @@ def process_records(
     renamed_files: list[str] = []
     if is_template_map(field_map):
         columns = [str(column) for column in field_map["columns"]]
+        if "key" not in columns:
+            columns.insert(0, "key")
         renamed_files = resolve_filename_clashes(records)
         check_unique_filenames(records)
         assign_objectids(records, "", used_dg_numbers(records))
@@ -150,6 +158,7 @@ def process_records(
         rows = normalize_records(selected, field_map=field_map, source_system=source_system)
         exported_files = export_files(rows, destination / "objects")
 
+    ensure_row_keys(rows, page=page)
     write_collection_csv(rows, csv_path, columns)
     write_structured_records(rows, json_path)
 
@@ -174,7 +183,9 @@ def merge_batch_rows(
         return rows
     with csv_path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
-        if reader.fieldnames != columns:
+        # A CSV written before the 'key' column existed still merges; its rows gain keys on write.
+        legacy_columns = [column for column in columns if column != "key"]
+        if reader.fieldnames != columns and reader.fieldnames != legacy_columns:
             return rows
         previous = list(reader)
 
@@ -230,6 +241,7 @@ def normalize_records(
             record.get("url") or record.get("record_url") or record.get("link")
         )
         base_row = {
+            "key": resolve_field("key", record, metadata, field_map),
             "identifier": base_identifier,
             "title": resolve_field("title", record, metadata, field_map),
             "creator": resolve_field("creator", record, metadata, field_map),
@@ -257,6 +269,9 @@ def normalize_records(
             row = dict(base_row)
             if len(files) > 1:
                 row["identifier"] = f"{base_identifier}-{index}"
+                if index > 1:
+                    # One source key can't label several rows; later rows adopt or mint their own.
+                    row["key"] = ""
             row["_source_file"] = file_info["source"]
             row["filename"] = file_info["filename"]
             normalized.append(row)
@@ -428,6 +443,12 @@ def assign_objectids(records: list[dict[str, Any]], prefix: str, used_numbers: l
     return changed
 
 
+def maintained_key(record: dict[str, Any], fallback: str) -> str:
+    """A record's existing valid key is kept (common-DG rule 1); otherwise its objectid is the key."""
+    key = stringify(record.get("key"))
+    return key if is_valid_key(key) else fallback
+
+
 def map_to_template(
     records: list[dict[str, Any]],
     template_map: dict[str, Any],
@@ -479,12 +500,13 @@ def map_to_template(
             }
         else:
             parent = {"display_template": "record"}
-        parent.update(objectid=record_id, parentid="")
+        parent.update(objectid=record_id, parentid="", key=maintained_key(record, record_id))
         rows.append(build_template_row(columns, rules, record, metadata, parent, mods, child=False))
         if len(items) > 1:
             for item in items:
                 context = file_context(item)
                 context.update(objectid=record["child_objectids"][item["filename"]], parentid=record_id)
+                context["key"] = context["objectid"]
                 rows.append(build_template_row(columns, rules, record, metadata, context, mods, child=True))
     return rows, count
 
@@ -677,6 +699,16 @@ def transform_values(value: str, rule: dict[str, Any]) -> list[str]:
         if part.casefold() not in {existing.casefold() for existing in results}:
             results.append(part)
     return results
+
+
+def ensure_row_keys(rows: list[dict[str, str]], page: Any | None = None) -> None:
+    """Enforce the common-DG-utilities key rules on every CSV row: an existing valid key is
+    kept, a dg_<epoch> fragment embedded in any field is adopted, and any other row mints a
+    new unique key. A Flet page de-duplicates minted keys across the session; without one a
+    run-scoped stand-in keeps keys unique within this batch."""
+    session = page if page is not None else SimpleNamespace(session=SimpleNamespace(generated_ids=set()))
+    for row in rows:
+        ensure_key(row, page=session)
 
 
 def write_collection_csv(

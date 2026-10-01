@@ -2,7 +2,7 @@
   "name": "Alma Dublin Core to Grinnell CollectionBuilder template",
   "decisions": "maps/alma-dc-to-grinnell.md",
   "columns": [
-    "objectid", "parentid", "display_template", "original_file_name", "originating_system_id",
+    "key", "objectid", "parentid", "display_template", "original_file_name", "originating_system_id",
     "object_location", "image_small", "image_thumb", "image_alt_text", "thumb_focus",
     "title", "creator_personal", "creator_org", "interviewee", "interviewer", "date", "Time Period",
     "description", "Subject (Topic)", "Subject (Person)", "Subject (Organization)",
@@ -14,6 +14,7 @@
     "Disclaimer"
   ],
   "rules": {
+    "key": {"from": "gems.key", "child": "inherit"},
     "objectid": {"from": "gems.objectid", "child": "inherit"},
     "parentid": {"from": "gems.parentid", "child": "inherit"},
     "display_template": {"from": "gems.display_template", "child": "inherit"},

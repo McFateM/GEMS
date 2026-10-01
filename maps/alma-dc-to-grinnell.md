@@ -28,7 +28,7 @@ Each entry in `rules` is keyed by an output column. Columns without a rule are l
 
 `mods.*` values come from the record's legacy Digital Grinnell MODS file (see D7): `extent`, `form`, `genre`, `creator_personal`, `creator_corporate`, `contributor_personal`, `contributor_corporate`.
 
-`gems.*` values: `objectid`, `parentid`, `display_template`, `filename` (own file; blank on a compound parent), `filenames` (all files for the row), `label` (Alma representation label), `representation_id`, `mime_type`, `dcmi_type`.
+`gems.*` values: `key`, `objectid`, `parentid`, `display_template`, `filename` (own file; blank on a compound parent), `filenames` (all files for the row), `label` (Alma representation label), `representation_id`, `mime_type`, `dcmi_type`.
 
 ## Row structure
 
@@ -41,6 +41,7 @@ Each entry in `rules` is keyed by an output column. Columns without a rule are l
   - The caption file is converted to `transcripts/<objectid>.csv` (`timestamp,speaker,words`) next to `collection_metadata.csv`. The site's `transcript` layout reads `_data/transcripts/<objectid>.csv` by default, so copy the folder into the collection's `_data/`.
   - The legacy `oh_speaker` markup is split into one row per speaker turn. Short labels ("Judy") are expanded to the full names in single-speaker cues ("Judy Hunter").
   - The original caption files stay in `objects/`. If conversion fails, the bib falls back to D1.
+- **D9. Every CSV row carries a maintained `key`.** Following the common-DG-utilities rules: an existing valid `key` (`dg_<epoch>` or `<slug>_dg_<epoch>`) is kept unchanged; otherwise the first `dg_<epoch>` fragment found in any field or filename is adopted; otherwise a new unique key is minted. Template rows key on the row's `objectid`, so the key lives as long as the manifest's IDs (D5), and a pre-existing valid `key` on a manifest record wins. GEMS adds a `key` column to the CSV even when a map doesn't declare one, and batches still merge with pre-key CSVs — their rows adopt keys from their `objectid`s. The `transcripts/<objectid>.csv` timed-text files keep their fixed `timestamp,speaker,words` shape; the objectid in their filename carries the key.
 - **D5. `objectid` follows the site's `<slug>_dg_<n>` convention** (e.g. `tdps_dg_1781104642`). Parents and compound children each get their own ID.
   - `<slug>` is the manifest's `objectid_prefix` if you add one (to match a site slug such as `re26`); otherwise it is the slugified `collection_title`, e.g. `social-justice-at-grinnell`.
   - `<n>` starts at the current Unix time and counts up by one per row, in row order. It always starts above the highest `_dg_` number already used by this manifest or by any sibling `gems_*.json` manifest in the same collection folder, so batches never collide.
@@ -58,6 +59,7 @@ Each entry in `rules` is keyed by an output column. Columns without a rule are l
 
 | Column | Source / rule | Rationale |
 | --- | --- | --- |
+| key | `gems.key`: the row's `objectid`, or the record's own valid `key` | Maintained for life under the common-DG-utilities rules (D9). |
 | objectid | `gems.objectid`: `<slug>_dg_<n>` | See D5. |
 | parentid | `gems.parentid` | Blank except on children. |
 | display_template | `gems.display_template` | See D1/D4. |
@@ -120,6 +122,7 @@ Add new entries at the top. Record the date, the column(s), what changed in the 
 
 | Date | Column(s) | Decision | Reason |
 | --- | --- | --- | --- |
+| 2026-10-01 | key | Added the `key` column and adopted common-DG-utilities key handling (D9). | Every CSV record keeps a stable `dg_<epoch>` identity for life. |
 | 2026-10-01 | display_template, Filename | Audio/video + caption bibs become one `transcript` item with a converted `transcripts/<objectid>.csv` (D8). | Matches the site's `transcript` layout for oral histories (PHPP). |
 | 2026-10-01 | extent, medium, genre, creator_*, contributor_* | Added legacy MODS `fallback` rules and the **Legacy MODS folder** setting (D7). | Fill gaps from the pre-migration records without overriding post-migration edits in Alma. |
 | 2026-10-01 | all metadata-sourced columns | Sources switched to qualified keys (`dc:*`, `dcterms:*`, with `xsi:type`). Added `combine`. Subjects now come only from `dcterms:subject`; `type` from `dcterms:type (dcterms:DCMIType)`. | GEMS previously merged `dc:` and `dcterms:` elements and dropped `xsi:type`, which mixed alternate titles into subjects and legacy types into DCMI types. |

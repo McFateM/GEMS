@@ -430,6 +430,100 @@ class PipelineTests(unittest.TestCase):
             download.assert_not_called()
             self.assertEqual(1, result.file_count)
 
+    def test_default_export_adds_a_maintained_key_column(self):
+        records = [{"identifier": "a1", "metadata": {"title": "One"}}, {"identifier": "b2", "metadata": {"title": "Two"}}]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = process_records(records, Path(tmpdir))
+            with result.csv_path.open("r", encoding="utf-8", newline="") as handle:
+                reader = csv.DictReader(handle)
+                rows = list(reader)
+            self.assertEqual("key", reader.fieldnames[0])
+            self.assertEqual(2, len({row["key"] for row in rows}))
+            for row in rows:
+                self.assertRegex(row["key"], r"^dg_\d+$")
+
+    def test_existing_keys_and_embedded_fragments_are_maintained(self):
+        records = [
+            {"identifier": "x", "key": "tdps_dg_1729123456"},
+            {"identifier": "photo dg_1729123457 detail"},
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = process_records(records, Path(tmpdir))
+            with result.csv_path.open("r", encoding="utf-8", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual("tdps_dg_1729123456", rows[0]["key"])
+            self.assertEqual("dg_1729123457", rows[1]["key"])
+
+    def test_multi_file_record_does_not_duplicate_its_key(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            files = []
+            for name in ("one.tif", "two.tif"):
+                path = tmp / name
+                path.write_text(name, encoding="utf-8")
+                files.append({"path": str(path), "filename": name})
+            record = {"identifier": "obj-1", "key": "dg_1729123456", "files": files}
+            result = process_records([record], tmp / "out")
+            with result.csv_path.open("r", encoding="utf-8", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual("dg_1729123456", rows[0]["key"])
+            self.assertRegex(rows[1]["key"], r"^dg_\d+$")
+            self.assertNotEqual(rows[0]["key"], rows[1]["key"])
+
+    def test_template_rows_use_objectid_as_key(self):
+        field_map = {"columns": ["key", "objectid", "parentid"], "rules": {
+            "key": {"from": "gems.key", "child": "inherit"},
+            "objectid": {"from": "gems.objectid", "child": "inherit"},
+            "parentid": {"from": "gems.parentid", "child": "inherit"},
+        }}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            files = []
+            for name in ("p-1.jpg", "p-2.jpg"):
+                path = tmp / name
+                path.write_text(name, encoding="utf-8")
+                files.append({"source": str(path), "filename": name})
+            result = process_records([{"mms_id": "991", "files": files}], tmp / "out", field_map=field_map)
+            with result.csv_path.open("r", encoding="utf-8", newline="") as handle:
+                reader = csv.DictReader(handle)
+                rows = list(reader)
+            self.assertEqual(["key", "objectid", "parentid"], reader.fieldnames)
+            self.assertEqual(3, len(rows))
+            self.assertEqual(3, len({row["key"] for row in rows}))
+            for row in rows:
+                self.assertEqual(row["objectid"], row["key"])
+                self.assertRegex(row["key"], r"^dg_\d+$")
+
+    def test_csv_written_before_keys_merges_and_gains_keys(self):
+        field_map = {"columns": ["objectid", "parentid", "title"], "rules": {
+            "objectid": {"from": "gems.objectid", "child": "inherit"},
+            "parentid": {"from": "gems.parentid", "child": "inherit"},
+            "title": {"from": "metadata.dc:title"},
+        }}
+        records = [
+            {"mms_id": "1", "objectid": "dg_111", "metadata": {"dc:title": "Old"}},
+            {"mms_id": "2", "metadata": {"dc:title": "New"}},
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir) / "out"
+            out.mkdir()
+            with (out / "collection_metadata.csv").open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["objectid", "parentid", "title"])
+                writer.writeheader()
+                writer.writerow({"objectid": "dg_111", "parentid": "", "title": "Old"})
+
+            result = process_records(records, out, field_map=field_map, start=2, limit=1)
+
+            self.assertEqual(2, result.row_count)
+            with result.csv_path.open("r", encoding="utf-8", newline="") as handle:
+                reader = csv.DictReader(handle)
+                rows = list(reader)
+            self.assertEqual(["key", "objectid", "parentid", "title"], reader.fieldnames)
+            self.assertEqual(("Old", "dg_111", "dg_111"), (rows[0]["title"], rows[0]["objectid"], rows[0]["key"]))
+            self.assertEqual("New", rows[1]["title"])
+            self.assertEqual(rows[1]["objectid"], rows[1]["key"])
+            self.assertRegex(rows[1]["key"], r"^dg_\d+$")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -315,6 +315,7 @@ def main(page: ft.Page) -> None:
                 start=start,
                 limit=limit,
                 refresh_source=AlmaClient().refresh_file_link,
+                page=page,
             )
             update_settings()
             for name in result.renamed_files:
