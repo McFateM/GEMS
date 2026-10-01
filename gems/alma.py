@@ -246,5 +246,9 @@ def _extract_downloadable_files(representations: dict[str, Any]) -> list[dict[st
                 continue
             source = file_info.get("download_url") or file_info.get("url")
             if source:
-                extracted.append({"source": str(source), "filename": str(file_info.get("label") or "object")})
+                # Labels can repeat across files ("MediaTrack VTT"); the storage path name is unique and keeps the extension.
+                stored_name = str(file_info.get("path") or "").rsplit("/", 1)[-1]
+                if "." not in stored_name:
+                    stored_name = ""
+                extracted.append({"source": str(source), "filename": stored_name or str(file_info.get("label") or "object")})
     return extracted

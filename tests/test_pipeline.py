@@ -9,7 +9,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 
 from gems.mods import read_legacy_mods
-from gems.pipeline import normalize_records, process_export, process_records
+from gems.pipeline import normalize_records, process_export, process_records, representation_items
 
 
 class PipelineTests(unittest.TestCase):
@@ -272,6 +272,91 @@ class PipelineTests(unittest.TestCase):
             process_records([record], Path(tmpdir), field_map=field_map, refresh_source=refresh)
             self.assertEqual([("991", "rep1", "f1")], refreshed)
             self.assertIn("Signature=fresh", download.call_args.args[0])
+
+    def test_files_with_repeated_alma_labels_get_unique_stored_names(self):
+        field_map = {"columns": ["objectid", "parentid", "original_file_name"], "rules": {
+            "objectid": {"from": "gems.objectid", "child": "inherit"},
+            "parentid": {"from": "gems.parentid", "child": "inherit"},
+            "original_file_name": {"from": "gems.filename", "child": "inherit"},
+        }}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            records = []
+            for number in (1, 2):
+                audio, captions = tmp / f"a{number}.mp3", tmp / f"c{number}.vtt"
+                audio.write_text(f"audio {number}", encoding="utf-8")
+                captions.write_text(f"captions {number}", encoding="utf-8")
+                records.append({
+                    "mms_id": f"99{number}",
+                    "representations": [{"id": f"rep{number}", "files": {"representation_file": [
+                        {"pid": f"v{number}", "label": "MediaTrack VTT", "url": str(captions),
+                         "path": f"store/x/grinnell_{number}_MEDIATRACK.vtt"},
+                        {"pid": f"m{number}", "label": f"grinnell_{number}_OBJ.mp3", "url": str(audio),
+                         "path": f"store/y/grinnell_{number}_OBJ.mp3"},
+                    ]}}],
+                    "files": [{"source": str(captions), "filename": "MediaTrack VTT"},
+                              {"source": str(audio), "filename": f"grinnell_{number}_OBJ.mp3"}],
+                })
+
+            result = process_records(records, tmp / "out", field_map=field_map)
+
+            self.assertEqual(4, result.file_count)
+            self.assertEqual(
+                ["grinnell_1_MEDIATRACK.vtt", "grinnell_1_OBJ.mp3", "grinnell_2_MEDIATRACK.vtt", "grinnell_2_OBJ.mp3"],
+                sorted(path.name for path in (tmp / "out" / "objects").iterdir()),
+            )
+            self.assertEqual("captions 2", (tmp / "out" / "objects" / "grinnell_2_MEDIATRACK.vtt").read_text(encoding="utf-8"))
+            self.assertEqual("v2", representation_items(records[1])[0]["file_pid"])
+
+            records[1]["representations"][0]["files"]["representation_file"][0]["path"] = "store/z/grinnell_1_MEDIATRACK.vtt"
+            with self.assertRaisesRegex(ValueError, "same name \\(grinnell_1_MEDIATRACK.vtt\\)"):
+                process_records(records, tmp / "out2", field_map=field_map)
+
+    def test_audio_with_captions_becomes_one_transcript_item(self):
+        field_map = json.loads((Path(__file__).parent.parent / "maps" / "alma-dc-to-grinnell.json").read_text(encoding="utf-8"))
+        vtt = (
+            "WEBVTT\n\n00:00.000 --> 00:26.260\n<v Judy Hunter><span class='oh_speaker_1'>Judy: "
+            "<span class='oh_speaker_text'> Let me see if it&#8217;s on.</span></span>\n\n"
+            "01:00:41.020 --> 01:01:11.129\n<v Judy Hunter & Geoff Peak><span class='oh_speaker_1'>Judy: "
+            "<span class='oh_speaker_text'> Oh.</span></span><span class='oh_speaker_2'>Geoff: "
+            "<span class='oh_speaker_text'> That's a mile west.</span></span>\n"
+        )
+        cue_xml = (
+            "<cues><cue cuenum=\"0\"><speaker>Interviewer - Jim Gordon</speaker><start>13.05</start><end>18.17</end>"
+            "<transcript>&lt;span class='oh_speaker_1'&gt;Interviewer: &lt;span class='oh_speaker_text'&gt; "
+            "State your name?&lt;/span&gt;&lt;/span&gt;</transcript></cue></cues>"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            records = []
+            for number, caption_name, caption_text in ((1, "grinnell_1_MEDIATRACK.vtt", vtt), (2, "grinnell_2_TRANSCRIPT.xml", cue_xml)):
+                (tmp / f"grinnell_{number}_OBJ.mp3").write_text("audio", encoding="utf-8")
+                (tmp / caption_name).write_text(caption_text, encoding="utf-8")
+                records.append({"mms_id": f"99{number}", "metadata": {"dc:title": f"Interview {number}"}, "files": [
+                    {"source": str(tmp / caption_name), "filename": caption_name},
+                    {"source": str(tmp / f"grinnell_{number}_OBJ.mp3"), "filename": f"grinnell_{number}_OBJ.mp3"},
+                ]})
+            out = tmp / "out"
+
+            result = process_records(records, out, field_map=field_map)
+
+            self.assertEqual(4, result.file_count)
+            with result.csv_path.open(encoding="utf-8", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(2, len(rows))
+            first = rows[0]
+            self.assertEqual(("transcript", "", "Sound", "audio/mpeg"), (first["display_template"], first["parentid"], first["type"], first["format"]))
+            self.assertEqual("grinnell_1_OBJ.mp3", first["original_file_name"])
+            self.assertEqual("grinnell_1_OBJ.mp3; grinnell_1_MEDIATRACK.vtt", first["Filename"])
+            with (out / "transcripts" / f"{first['objectid']}.csv").open(encoding="utf-8", newline="") as handle:
+                self.assertEqual([
+                    {"timestamp": "00:00:00", "speaker": "Judy Hunter", "words": "Let me see if it\u2019s on."},
+                    {"timestamp": "01:00:41", "speaker": "Judy Hunter", "words": "Oh."},
+                    {"timestamp": "01:00:41", "speaker": "Geoff", "words": "That's a mile west."},
+                ], list(csv.DictReader(handle)))
+            with (out / "transcripts" / f"{rows[1]['objectid']}.csv").open(encoding="utf-8", newline="") as handle:
+                self.assertEqual([{"timestamp": "00:00:13", "speaker": "Interviewer - Jim Gordon", "words": "State your name?"}],
+                                 list(csv.DictReader(handle)))
 
     def test_mods_sources_are_rejected_outside_fallback(self):
         field_map = {"columns": ["extent"], "rules": {"extent": {"from": "mods.extent"}}}

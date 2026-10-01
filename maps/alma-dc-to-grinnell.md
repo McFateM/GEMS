@@ -36,6 +36,11 @@ Each entry in `rules` is keyed by an output column. Columns without a rule are l
 - **D2. Children are sorted by natural filename order** (`grinnell_10379…` before `grinnell_10380…`). Alma returns representations in no useful order. The legacy order is in `tableOfContents`/`dginfo`, but it doesn't match the Alma files one-to-one (25 titles vs. 10 files).
 - **D3. Children carry only row-specific metadata.** Following CollectionBuilder guidance, child rows get only the control fields, title, type, format, identifier, filename, rights, and Contributing Institution. Everything descriptive lives on the parent.
 - **D4. `display_template` comes from the file's MIME type**: image → `image`, PDF → `pdf`, audio → `audio`, video → `video`, otherwise `record`. A bib with no files is `record`.
+- **D8. Oral histories become one `transcript` item.** This applies to a bib whose files are exactly one audio or video file plus caption/transcript files (`*.vtt`, or `*TRANSCRIPT*.xml` in the legacy cue format), as in PHPP Oral Histories.
+  - It becomes a single row with `display_template` = `transcript`, not a compound object. `original_file_name`, `format` and `type` describe the media file, and `Filename` lists all the files.
+  - The caption file is converted to `transcripts/<objectid>.csv` (`timestamp,speaker,words`) next to `collection_metadata.csv`. The site's `transcript` layout reads `_data/transcripts/<objectid>.csv` by default, so copy the folder into the collection's `_data/`.
+  - The legacy `oh_speaker` markup is split into one row per speaker turn. Short labels ("Judy") are expanded to the full names in single-speaker cues ("Judy Hunter").
+  - The original caption files stay in `objects/`. If conversion fails, the bib falls back to D1.
 - **D5. `objectid` follows the site's `<slug>_dg_<n>` convention** (e.g. `tdps_dg_1781104642`). Parents and compound children each get their own ID.
   - `<slug>` is the manifest's `objectid_prefix` if you add one (to match a site slug such as `re26`); otherwise it is the slugified `collection_title`, e.g. `social-justice-at-grinnell`.
   - `<n>` starts at the current Unix time and counts up by one per row, in row order. It always starts above the highest `_dg_` number already used by this manifest or by any sibling `gems_*.json` manifest in the same collection folder, so batches never collide.
@@ -115,6 +120,7 @@ Add new entries at the top. Record the date, the column(s), what changed in the 
 
 | Date | Column(s) | Decision | Reason |
 | --- | --- | --- | --- |
+| 2026-10-01 | display_template, Filename | Audio/video + caption bibs become one `transcript` item with a converted `transcripts/<objectid>.csv` (D8). | Matches the site's `transcript` layout for oral histories (PHPP). |
 | 2026-10-01 | extent, medium, genre, creator_*, contributor_* | Added legacy MODS `fallback` rules and the **Legacy MODS folder** setting (D7). | Fill gaps from the pre-migration records without overriding post-migration edits in Alma. |
 | 2026-10-01 | all metadata-sourced columns | Sources switched to qualified keys (`dc:*`, `dcterms:*`, with `xsi:type`). Added `combine`. Subjects now come only from `dcterms:subject`; `type` from `dcterms:type (dcterms:DCMIType)`. | GEMS previously merged `dc:` and `dcterms:` elements and dropped `xsi:type`, which mixed alternate titles into subjects and legacy types into DCMI types. |
 | 2026-09-30 | objectid, parentid | `objectid` is `<slug>_dg_<n>`, persisted in the manifest (D5). Resolves Q1. | Matches site convention. |

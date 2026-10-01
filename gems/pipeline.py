@@ -9,13 +9,14 @@ import shutil
 import time
 from dataclasses import dataclass
 from functools import cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, unquote, urlparse
 from urllib.request import urlretrieve
 
 from .mods import LEGACY_PID, find_legacy_mods, read_legacy_mods
+from .transcripts import is_transcript_file, write_transcript_csv
 
 COLLECTIONBUILDER_FIELDS = [
     "identifier",
@@ -129,6 +130,7 @@ def process_records(
     json_path = destination / "normalized_records.json"
     if is_template_map(field_map):
         columns = [str(column) for column in field_map["columns"]]
+        check_unique_filenames(records)
         assign_objectids(records, "", used_dg_numbers(records))
         rows, exported_files = map_to_template(
             selected, field_map, destination / "objects", Path(legacy_mods_dir) if legacy_mods_dir else None,
@@ -444,7 +446,20 @@ def map_to_template(
                     source = refresh_source(record, item)
                 fetch_object(source, destination)
             count += 1
-        if len(items) == 1:
+        media = [item for item in items if file_context(item)["display_template"] in {"audio", "video"}]
+        transcripts = [item for item in items if is_transcript_file(item["filename"])]
+        if (
+            len(media) == 1 and transcripts and len(media) + len(transcripts) == len(items)
+            # Oral history: one transcript item plays the media and reads its timed text from transcripts/<objectid>.csv.
+            and write_transcript_csv(objects_dir / transcripts[0]["filename"], objects_dir.parent / "transcripts" / f"{record_id}.csv")
+        ):
+            parent = file_context(media[0])
+            parent.update(
+                display_template="transcript",
+                filenames="; ".join(item["filename"] for item in media + transcripts),
+            )
+            items = []
+        elif len(items) == 1:
             parent = file_context(items[0])
         elif items:
             child_types = {file_context(item)["dcmi_type"] for item in items}
@@ -481,26 +496,53 @@ def legacy_mods_loader(metadata: dict[str, Any], legacy_mods_dir: Path | None) -
 
 
 def representation_items(record: dict[str, Any]) -> list[dict[str, str]]:
-    details: dict[str, dict[str, str]] = {}
+    # Match files to Alma details by download URL: labels repeat (e.g. 30 files labelled "MediaTrack VTT").
+    by_source: dict[str, dict[str, str]] = {}
+    by_label: dict[str, list[dict[str, str]]] = {}
     representations = record.get("representations")
     for representation in representations if isinstance(representations, list) else []:
         files = representation.get("files") if isinstance(representation, dict) else None
         file_items = files.get("representation_file", []) if isinstance(files, dict) else []
         for file_info in file_items if isinstance(file_items, list) else [file_items]:
-            if isinstance(file_info, dict) and file_info.get("label"):
-                details[str(file_info["label"])] = {
-                    "label": stringify(representation.get("label")),
-                    "representation_id": stringify(representation.get("id")),
-                    "file_pid": stringify(file_info.get("pid")),
-                }
-    items = [
-        {"source": file_info["source"], **details.get(file_info["filename"], {}),
-         "filename": safe_filename(file_info["filename"], index)}
-        for index, file_info in enumerate(extract_files(record), start=1)
-    ]
+            if not isinstance(file_info, dict):
+                continue
+            detail = {
+                "label": stringify(representation.get("label")),
+                "representation_id": stringify(representation.get("id")),
+                "file_pid": stringify(file_info.get("pid")),
+                "stored_name": PurePosixPath(stringify(file_info.get("path"))).name,
+            }
+            source = stringify(file_info.get("download_url") or file_info.get("url"))
+            if source:
+                by_source[source] = detail
+            if file_info.get("label"):
+                by_label.setdefault(str(file_info["label"]), []).append(detail)
+    items = []
+    for index, file_info in enumerate(extract_files(record), start=1):
+        labelled = by_label.get(file_info["filename"], [])
+        detail = by_source.get(file_info["source"]) or (labelled[0] if len(labelled) == 1 else {})
+        name = detail.get("stored_name", "")
+        name = name if "." in name else file_info["filename"]
+        items.append({
+            "source": file_info["source"],
+            **{key: value for key, value in detail.items() if key != "stored_name"},
+            "filename": safe_filename(name, index),
+        })
     return sorted(items, key=lambda item: [
         int(token) if token.isdigit() else token.lower() for token in re.split(r"(\d+)", item["filename"])
     ])
+
+
+def check_unique_filenames(records: list[dict[str, Any]]) -> None:
+    owners: dict[str, str] = {}
+    clashes: set[str] = set()
+    for record in records:
+        for item in representation_items(record):
+            if owners.setdefault(item["filename"], item["source"]) != item["source"]:
+                clashes.add(item["filename"])
+    if clashes:
+        shown = ", ".join(sorted(clashes)[:5])
+        raise ValueError(f"Different files would be saved under the same name ({shown}); nothing was mapped.")
 
 
 def file_context(item: dict[str, str]) -> dict[str, str]:
