@@ -62,7 +62,6 @@ def main(page: ft.Page) -> None:
     retrieved_collection_id = ""
     retrieved_total = 0
     retrieved_group = ""
-    pending_retrieval = False
     manifest_created_at: datetime | None = None
     run_log_handler: logging.FileHandler | None = None
     active_log_path = LOG_PATH
@@ -185,10 +184,8 @@ def main(page: ft.Page) -> None:
         )
 
     def on_source_pick(event: ft.FilePickerResultEvent) -> None:
-        nonlocal pending_retrieval
         if event.files:
             source_field.value = event.files[0].path
-            pending_retrieval = False
             update_settings()
             report(f"Selected manifest: {source_field.value}")
 
@@ -221,8 +218,8 @@ def main(page: ft.Page) -> None:
             raise ValueError("Choose an existing destination folder before using button 1.")
         return Path(raw)
 
-    def save_retrieved_manifest(parent: Path) -> None:
-        nonlocal run_log_handler, active_log_path, pending_retrieval
+    def save_retrieved_manifest(parent: Path, note: str = "") -> bool:
+        nonlocal run_log_handler, active_log_path
         report("Saving Alma manifest...")
         try:
             slug = re.sub(r"[^a-z0-9]+", "-", retrieved_title.lower()).strip("-")[:40].strip("-") or "collection"
@@ -263,11 +260,12 @@ def main(page: ft.Page) -> None:
                 len(alma_records), retrieved_set_id or retrieved_collection_id or "MMS IDs",
             )
             source_field.value = str(manifest_path)
-            pending_retrieval = False
             update_settings()
-            report(f"Saved {len(alma_records)} Alma record(s) to {run_dir}. Ready to map and export.", success=True)
+            report(f"Saved {len(alma_records)} Alma record(s) to {run_dir}. Ready to map and export.{note}", success=True)
+            return True
         except Exception as exc:  # pragma: no cover - UI feedback wrapper
             report(f"Alma manifest export failed: {exc}", error=True)
+            return False
 
     source_picker = ft.FilePicker(on_result=on_source_pick)
     output_picker = ft.FilePicker(on_result=on_output_pick)
@@ -288,14 +286,7 @@ def main(page: ft.Page) -> None:
         return field_map
 
     def run_export(_: ft.ControlEvent) -> None:
-        nonlocal manifest_created_at
         try:
-            if pending_retrieval:
-                root = destination_root()
-                manifest_created_at = datetime.now().astimezone()
-                save_retrieved_manifest(root)
-                if pending_retrieval:
-                    return
             report("Mapping and exporting manifest...")
             if not source_field.value:
                 raise ValueError("Choose a prepared export manifest.")
@@ -337,8 +328,10 @@ def main(page: ft.Page) -> None:
 
     def fetch_alma_records(_: ft.ControlEvent) -> None:
         nonlocal alma_records, retrieved_title, retrieved_set_id, retrieved_collection_id
-        nonlocal retrieved_total, retrieved_group, pending_retrieval
+        nonlocal retrieved_total, retrieved_group, manifest_created_at
         try:
+            # Check the destination first so a long retrieval is never left unsaved.
+            root = destination_root()
             close_run_log()
             report("Retrieving Alma records...")
             alma_records = []
@@ -346,7 +339,6 @@ def main(page: ft.Page) -> None:
             retrieved_set_id = ""
             retrieved_collection_id = ""
             retrieved_group = ""
-            pending_retrieval = False
             client = AlmaClient()
             mms_ids = [value.strip() for value in (alma_ids_field.value or "").replace(",", "\n").splitlines()]
             if mms_ids:
@@ -392,32 +384,22 @@ def main(page: ft.Page) -> None:
             retrieved_set_id = set_id
             retrieved_total = total
             retrieved_group = group
-            pending_retrieval = True
-            update_settings()
-            message = f"Retrieved all {len(alma_records)} Alma record(s). Ready to export."
+            note = ""
             skipped = list(client.skipped_positions)
             if skipped:
                 positions = ", ".join(str(position) for position in skipped)
-                message += (
+                note = (
                     f" Alma could not list {len(skipped)} collection entr"
                     f"{'y' if len(skipped) == 1 else 'ies'} (position {positions}); "
                     "they were skipped. See the activity log for Alma tracking IDs."
                 )
-            report(message, success=True)
+            manifest_created_at = datetime.now().astimezone()
+            if not save_retrieved_manifest(root, note):
+                fallback = DATA_DIR / "unsaved-manifests"
+                fallback.mkdir(parents=True, exist_ok=True)
+                save_retrieved_manifest(fallback, f"{note} The destination {root} could not be written, so it was saved locally.")
         except Exception as exc:  # pragma: no cover - UI feedback wrapper
             report(f"Alma retrieval failed: {exc}", error=True)
-
-    def export_alma_records(_: ft.ControlEvent) -> None:
-        nonlocal manifest_created_at
-        try:
-            if not alma_records:
-                raise ValueError("Retrieve Alma records before exporting.")
-            root = destination_root()
-            close_run_log()
-            manifest_created_at = datetime.now().astimezone()
-            save_retrieved_manifest(root)
-        except Exception as exc:  # pragma: no cover - UI feedback wrapper
-            report(f"Alma manifest export failed: {exc}", error=True)
 
     page.add(
         ft.Container(
@@ -430,7 +412,7 @@ def main(page: ft.Page) -> None:
                     ft.Text("Gather, export, map, and serialize digital collection records."),
                     ft.Divider(),
                     ft.Text("Retrieve from Alma", size=20, weight=ft.FontWeight.W_600),
-                    ft.Row([alma_set_field, ft.FilledButton("Retrieve", icon=ft.Icons.DOWNLOAD, on_click=fetch_alma_records)]),
+                    alma_set_field,
                     alma_ids_field,
                     ft.Row(
                         [
@@ -445,9 +427,9 @@ def main(page: ft.Page) -> None:
                         ]
                     ),
                     ft.FilledButton(
-                        "1) Export Alma Records to JSON Manifest",
-                        icon=ft.Icons.ARCHIVE,
-                        on_click=export_alma_records,
+                        "1) Retrieve from Alma and Save JSON Manifest",
+                        icon=ft.Icons.DOWNLOAD,
+                        on_click=fetch_alma_records,
                     ),
                     ft.Divider(),
                     ft.Text("Map Manifest to CSV", size=20, weight=ft.FontWeight.W_600),
