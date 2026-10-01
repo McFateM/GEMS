@@ -228,8 +228,13 @@ def resolve_field(
     candidates.extend(FIELD_ALIASES.get(target_field, (target_field,)))
     for candidate in candidates:
         normalized_candidate = normalize_key(candidate)
-        if normalized_candidate in metadata:
-            return metadata[normalized_candidate]
+        for key in (normalized_candidate, f"dc_{normalized_candidate}", f"dcterms_{normalized_candidate}"):
+            if key in metadata:
+                return metadata[key]
+        # xsi-typed Alma elements, e.g. "dcterms:subject (dcterms:LCSH)"
+        typed = next((value for key, value in metadata.items() if key.startswith(f"dcterms_{normalized_candidate}_")), None)
+        if typed is not None:
+            return typed
         raw_value = record.get(candidate)
         if raw_value is not None:
             return stringify(raw_value)
@@ -305,7 +310,7 @@ def is_template_map(field_map: Any) -> bool:
     return isinstance(field_map, dict) and isinstance(field_map.get("columns"), list)
 
 
-DCMI_TYPES = {"image": "Image", "audio": "Sound", "video": "MovingImage", "pdf": "Text"}
+DCMI_TYPES = {"image": "Still Image", "audio": "Sound", "video": "Moving Image", "pdf": "Text"}
 DG_NUMBER = re.compile(r"(?:^|_)dg_(\d+)$")
 
 
@@ -448,14 +453,17 @@ def apply_rule(rule: dict[str, Any], record: dict[str, Any], metadata: dict[str,
         return stringify(rule["value"])
     sources = rule.get("from", [])
     scopes = {"metadata": metadata, "record": record, "gems": gems}
+    collected: list[str] = []
     for source in [sources] if isinstance(sources, str) else sources:
         scope, _, key = str(source).partition(".")
         if scope not in scopes:
             raise ValueError(f"Unknown field map source {source!r}; use metadata.*, record.*, or gems.*")
         values = transform_values(stringify(scopes[scope].get(key)), rule)
-        if values:
+        if values and not rule.get("combine"):
             return "; ".join(values)
-    return ""
+        seen = {value.casefold() for value in collected}
+        collected.extend(value for value in values if value.casefold() not in seen)
+    return "; ".join(collected)
 
 
 def transform_values(value: str, rule: dict[str, Any]) -> list[str]:

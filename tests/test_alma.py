@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from gems.alma import AlmaClient
+from gems.alma import AlmaClient, _extract_dc_metadata
 
 
 class FakeResponse:
@@ -120,13 +120,30 @@ class AlmaClientTests(unittest.TestCase):
         self.assertEqual(["991", "992"], client.fetch_set_members("123"))
         records = client.fetch_records(["991"])
 
-        self.assertEqual("API title", records[0]["metadata"]["title"])
-        self.assertEqual("Archivist", records[0]["metadata"]["creator"])
+        self.assertEqual("API title", records[0]["metadata"]["dc:title"])
+        self.assertEqual("Archivist", records[0]["metadata"]["dc:creator"])
+        self.assertNotIn("title", records[0]["metadata"])
         self.assertEqual(
             [{"source": "https://download.example/scan.tif", "filename": "scan.tif"}],
             records[0]["files"],
         )
         self.assertIn("https://files.example/991", session.urls)
+
+    def test_dc_metadata_keeps_namespace_and_xsi_type(self) -> None:
+        metadata = _extract_dc_metadata(
+            '<record xmlns="http://alma.exlibrisgroup.com/dc/01GCL_INST" xmlns:dc="http://purl.org/dc/elements/1.1/"'
+            ' xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+            '<dginfo>local</dginfo><dc:type>image</dc:type>'
+            '<dcterms:type xsi:type="dcterms:DCMIType">Still Image</dcterms:type>'
+            '<dcterms:subject xsi:type="dcterms:LCSH">Portraits</dcterms:subject>'
+            '<dcterms:subject xsi:type="dcterms:LCSH">Slavery</dcterms:subject></record>'
+        )
+        self.assertEqual({
+            "dginfo": "local",
+            "dc:type": "image",
+            "dcterms:type (dcterms:DCMIType)": "Still Image",
+            "dcterms:subject (dcterms:LCSH)": "Portraits; Slavery",
+        }, metadata)
 
 
 if __name__ == "__main__":

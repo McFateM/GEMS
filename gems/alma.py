@@ -110,9 +110,10 @@ class AlmaClient:
 
     def _to_gems_record(self, mms_id: str, bib: dict[str, Any]) -> dict[str, Any]:
         metadata = _extract_dc_metadata(bib.get("anies", []))
-        metadata.setdefault("title", str(bib.get("title", "")))
-        metadata.setdefault("creator", str(bib.get("author", "")))
-        metadata.setdefault("date", str(bib.get("date_of_publication", "")))
+        qualified = {key.split(" (")[0] for key in metadata}
+        for name, field in (("title", "title"), ("creator", "author"), ("date", "date_of_publication")):
+            if not {f"dc:{name}", f"dcterms:{name}"} & qualified and bib.get(field):
+                metadata[f"dc:{name}"] = str(bib[field])
         representations = self._get(f"/almaws/v1/bibs/{mms_id}/representations", params={"expand": "p_files"})
         representation_items = representations.get("representation", [])
         if not isinstance(representation_items, list):
@@ -148,7 +149,15 @@ class AlmaClient:
         }
 
 
+DC_PREFIXES = {
+    "http://purl.org/dc/elements/1.1/": "dc",
+    "http://purl.org/dc/terms/": "dcterms",
+}
+XSI_TYPE = "{http://www.w3.org/2001/XMLSchema-instance}type"
+
+
 def _extract_dc_metadata(anies: Any) -> dict[str, str]:
+    """Key values by qualified element name plus any xsi:type, e.g. `dcterms:type (dcterms:DCMIType)`."""
     xml_values = anies if isinstance(anies, list) else [anies]
     metadata: dict[str, list[str]] = {}
     for xml_value in xml_values:
@@ -159,10 +168,14 @@ def _extract_dc_metadata(anies: Any) -> dict[str, str]:
         except element_tree.ParseError:
             continue
         for element in root.iter():
-            name = element.tag.rsplit("}", 1)[-1]
+            namespace, _, name = element.tag[1:].rpartition("}") if element.tag.startswith("{") else ("", "", element.tag)
+            prefix = DC_PREFIXES.get(namespace)
+            key = f"{prefix}:{name}" if prefix else name
+            if element.get(XSI_TYPE):
+                key = f"{key} ({element.get(XSI_TYPE)})"
             value = (element.text or "").strip()
             if value:
-                metadata.setdefault(name, []).append(value)
+                metadata.setdefault(key, []).append(value)
     return {name: "; ".join(dict.fromkeys(values)) for name, values in metadata.items()}
 
 

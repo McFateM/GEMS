@@ -92,11 +92,13 @@ class PipelineTests(unittest.TestCase):
             for name in ("grinnell_12_OBJ.jpg", "grinnell_11_OBJ.jpg", "grinnell_5_OBJ.pdf"):
                 (tmp / name).write_text(name, encoding="utf-8")
             metadata = {
-                "title": "Symposium photos", "creator": "Brown, John, 1800-1859; Des Moines Register",
-                "subject": "Slavery; Brown, John, 1800-1859", "type": "compound", "created": "2011",
-                "date": "2011-10", "identifier": "grinnell:10; http://hdl.handle.net/11084/10; alma:x",
-                "isPartOf": "Social Justice at Grinnell; Digital Grinnell",
-                "rights": '<a href="https://rightsstatements.org/page/NoC-US/1.0/?language=en">Public Domain</a>',
+                "dc:title": "Symposium photos", "dc:creator": "Brown, John, 1800-1859; Des Moines Register",
+                "dc:subject": "Old alt title", "dcterms:subject (dcterms:LCSH)": "Slavery; Brown, John, 1800-1859",
+                "dc:type": "compound", "dcterms:created": "2011", "dcterms:dateAccepted": "2011-10",
+                "dc:identifier": "grinnell:10; http://hdl.handle.net/11084/10; alma:x",
+                "dcterms:identifier (dcterms:URI)": "http://hdl.handle.net/11084/10",
+                "dcterms:isPartOf": "Social Justice at Grinnell; Digital Grinnell",
+                "dc:rights": '<a href="https://rightsstatements.org/page/NoC-US/1.0/?language=en">Public Domain</a>',
             }
             records = [
                 {
@@ -109,7 +111,7 @@ class PipelineTests(unittest.TestCase):
                     "files": [{"source": str(tmp / f"grinnell_{number}_OBJ.jpg"), "filename": f"grinnell_{number}_OBJ.jpg"} for number in (12, 11)],
                 },
                 {
-                    "mms_id": "992", "metadata": {"title": "Clipping", "type": "text; Text"},
+                    "mms_id": "992", "metadata": {"dc:title": "Clipping", "dc:type": "text", "dcterms:type (dcterms:DCMIType)": "Text"},
                     "files": [{"source": str(tmp / "grinnell_5_OBJ.pdf"), "filename": "grinnell_5_OBJ.pdf"}],
                 },
             ]
@@ -130,7 +132,7 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual("Des Moines Register", parent["creator_org"])
             self.assertEqual(("Slavery", "Brown, John, 1800-1859"), (parent["Subject (Topic)"], parent["Subject (Person)"]))
             self.assertEqual("2011", parent["date"])
-            self.assertEqual("Image", parent["type"])
+            self.assertEqual("Still Image", parent["type"])
             self.assertEqual("Social Justice at Grinnell", parent["Digital Collection Title"])
             self.assertEqual(("grinnell:10", "http://hdl.handle.net/11084/10"), (parent["identifier"], parent["Item Permalink"]))
             self.assertEqual(("Public Domain", "http://rightsstatements.org/vocab/NoC-US/1.0/"), (parent["rights"], parent["Standardized Rights"]))

@@ -6,13 +6,16 @@ Source studied: `metadata` of the Social Justice at Grinnell manifest `2026-09-3
 
 To use it, choose this JSON file in **Field map** before pressing **2) Map and Export Manifest to CSV**. The CSV columns are the `columns` list, in that order.
 
+**Source keys.** Since 2026-10-01, GEMS keeps Alma's DC granularity. Each `metadata` key is the qualified element name, plus its `xsi:type` in parentheses when Alma records one: `dc:type`, `dcterms:type (dcterms:DCMIType)`, `dcterms:subject (dcterms:LCSH)`, `dcterms:identifier (dcterms:URI)`. Alma-local elements (`dginfo`, `googlesheetsource`, `oldalttitle`, `compoundrelationship`) stay unprefixed. Manifests retrieved before that date use flat keys (`type`, `subject`…); re-retrieve them before mapping with this map.
+
 ## Rule vocabulary
 
 Each entry in `rules` is keyed by an output column. Columns without a rule are left blank.
 
 | Key | Meaning |
 | --- | --- |
-| `from` | Source name, or a list tried in order until one yields a value. Sources: `metadata.<key>` (Alma DC element, case-sensitive), `record.<key>` (top-level record field such as `mms_id`), `gems.<key>` (values computed by GEMS, below). |
+| `from` | Source name, or a list tried in order until one yields a value. Sources: `metadata.<key>` (Alma DC element, e.g. `metadata.dcterms:subject (dcterms:LCSH)`; case-sensitive), `record.<key>` (top-level record field such as `mms_id`), `gems.<key>` (values computed by GEMS, below). |
+| `combine` | With a `from` list: merge values from all sources (de-duplicated) instead of stopping at the first. Use it where an element may appear as both `dc:` and `dcterms:`. |
 | `value` | A constant. |
 | `split` | Default `true`: split on `;`, trim, drop blanks, and remove case-insensitive duplicates, then re-join with `; `. Set `false` for prose (titles, abstracts, rights). |
 | `match` / `exclude` | Regex; keep / drop individual values that match. |
@@ -48,42 +51,43 @@ Each entry in `rules` is keyed by an output column. Columns without a rule are l
 | originating_system_id | `record.mms_id`; children: Alma representation ID | Alma is now the system of record; this allows round-trips back to Alma. |
 | object_location, image_small, image_thumb | — | Filled by DART (D6). |
 | image_alt_text, thumb_focus | — | CollectionBuilder falls back to description/title for alt text. |
-| title | `metadata.title`; children: representation label, else filename | Representation labels are the legacy child titles. |
-| creator_personal / creator_org | `metadata.creator`, split by a personal-name regex | DC doesn't distinguish persons from organizations. Values shaped like LC personal names (`Surname, Forename…`, optional second surname word) are treated as persons; everything else as organizations. Multi-word surnames beyond two words (e.g. `Van Der Berg, …`) will be misfiled as organizations. |
+| title | `dc:title`, else `dcterms:title`; children: representation label, else filename | Representation labels are the legacy child titles. |
+| creator_personal / creator_org | `dc:creator` + `dcterms:creator` (combined), split by a personal-name regex | DC doesn't distinguish persons from organizations. Values shaped like LC personal names (`Surname, Forename…`, optional second surname word) are treated as persons; everything else as organizations. Multi-word surnames beyond two words (e.g. `Van Der Berg, …`) will be misfiled as organizations. |
 | interviewee, interviewer | — | No source element. |
-| date | `metadata.created`, else `metadata.date` | The column is "Date Created". `created` is the proper DC term and is a clean year; `date` sometimes holds `after 1859`/`2011-10`. |
-| Time Period | `metadata.temporal` | e.g. `Eighteen fifties`. |
-| description | `metadata.abstract` (not split) | |
-| Subject (Topic) / Subject (Person) | `metadata.subject`, split by the same personal-name regex | e.g. `Brown, John, 1800-1859` → Person. |
+| date | `dcterms:created`, else `dc:date`, else `dcterms:date` | The column is "Date Created", and `dcterms:created` is a clean year. |
+| Time Period | `dcterms:temporal` | e.g. `Eighteen fifties`. |
+| description | `dcterms:abstract`, else `dc:description`/`dcterms:description` (not split) | |
+| Subject (Topic) / Subject (Person) | `dcterms:subject (dcterms:LCSH)` + untyped `dcterms:subject` (combined), split by the same personal-name regex | e.g. `Brown, John, 1800-1859` → Person. `dc:subject` is deliberately excluded: in this collection it holds legacy alternate titles (identical to `oldalttitle`), not subjects. |
 | Subject (Organization) | — | Can't be reliably separated from topics in DC (Q4). |
-| contributor_personal / contributor_org | `metadata.contributor`, personal-name regex | Same approach as creator. |
-| location | `metadata.spatial` | |
+| contributor_personal / contributor_org | `dc:contributor` + `dcterms:contributor` (combined), personal-name regex | Same approach as creator. |
+| location | `dcterms:spatial` | |
 | latitude, longitude | — | No source element. |
-| lanugage | `metadata.language` | The column name keeps the template's spelling (`lanugage`) so it matches the site's CSV. |
+| lanugage | `dc:language` + `dcterms:language` (combined) | The column name keeps the template's spelling (`lanugage`) so it matches the site's CSV. |
 | source, provenance, Call Number, Archival Series, Box, Folder Title, Folder Number, Finding Aid Permalink | — | No source element in the sample. |
 | Contributing Institution | constant `Grinnell College Libraries` | Every sample item is held by the Libraries. Confirm the wording (Q5). |
-| publisher | `metadata.publisher` | |
+| publisher | `dcterms:publisher` + `dc:publisher` (combined) | |
 | extent, medium, genre | — | No source element. |
-| type | `metadata.type` without `compound`, capitalized and de-duplicated; else `gems.dcmi_type`. Children: `gems.dcmi_type` | `text; Text` → `Text`. `compound` is an Islandora model, not a DCMI type, so compound parents take their children's shared DCMI type. |
-| format | `gems.mime_type` | CollectionBuilder expects a MIME type. The DC `format` values (`born digital`, `reformated digital`) describe digital origin, not file format. |
-| Digital Collection Title | `metadata.isPartOf` without `Digital Grinnell` | `Digital Grinnell` is the whole repository, not a collection. |
+| type | `dcterms:type (dcterms:DCMIType)`, else `gems.dcmi_type`. Children: `gems.dcmi_type` | Uses Alma's DCMI vocabulary values (`Text`, `Still Image`). GEMS's computed values use the same labels. Compound parents have no DCMIType, so they take their children's shared type. |
+| format | `gems.mime_type` | CollectionBuilder expects a MIME type. `dc:format` values (`born digital`, `reformated digital`) describe digital origin, not file format. |
+| Digital Collection Title | `dcterms:isPartOf` without `Digital Grinnell` | `Digital Grinnell` is the whole repository, not a collection. |
 | Digital Collection Permalink, related, Avian Identifier, Disclaimer | — | No source element. |
-| identifier | `metadata.identifier` value matching `grinnell:<n>`; children: derived from filename `grinnell_<n>_…` | Keeps the legacy Islandora PID for continuity with old URLs and handles. |
+| identifier | `dc:identifier` value matching `grinnell:<n>`; children: derived from filename `grinnell_<n>_…` | Keeps the legacy Islandora PID for continuity with old URLs and handles. |
 | Filename | `gems.filenames` | Compound parents list all child filenames. |
-| Item Permalink | `metadata.identifier` value matching `http(s)://hdl.handle.net/…` | Handles exist only for parent/single objects. |
-| rights | `metadata.rights`, HTML stripped | The rights anchor text, e.g. `Public Domain in the United States`. |
-| Standardized Rights | the rightsstatements.org `href` in `metadata.rights`, normalized to `http://rightsstatements.org/vocab/<code>/<version>/` | Uses the canonical URI instead of the language-specific page URL. The plain copyright statement has no URL and stays blank (Q6). |
+| Item Permalink | `dcterms:identifier (dcterms:URI)`, else `dc:identifier`, value matching `http(s)://hdl.handle.net/…` | The URI-typed identifier is the authoritative handle. Handles exist only for parent/single objects. |
+| rights | `dc:rights`, else `dcterms:rights`, HTML stripped | The rights anchor text, e.g. `Public Domain in the United States`. |
+| Standardized Rights | the rightsstatements.org `href` in `dc:rights`/`dcterms:rights`, normalized to `http://rightsstatements.org/vocab/<code>/<version>/` | Uses the canonical URI instead of the language-specific page URL. The plain copyright statement has no URL and stays blank (Q6). |
 
 ## Source elements intentionally not mapped
 
 | Element | Reason |
 | --- | --- |
-| `alternative`, `oldalttitle` | No alternative-title column in the template. `oldalttitle` values are also repeated in `subject`. |
-| `tableOfContents` | Lists child titles, which already appear as child rows. |
-| `format` | Digital-origin statement (see `format` above). |
-| `dateAccepted` | Duplicates `date`. |
+| `dc:subject`, `dcterms:alternative`, `oldalttitle` | Alternate titles. The template has no alternative-title column. |
+| `dc:type` | Coarse legacy Islandora types (`compound`, `text`, `image`), superseded by `dcterms:type (dcterms:DCMIType)`. |
+| `dcterms:tableOfContents` | Lists child titles, which already appear as child rows. |
+| `dc:format` | Digital-origin statement (see `format` above). |
+| `dcterms:dateAccepted` | Not a creation date. |
 | `googlesheetsource`, `dginfo`, `compoundrelationship` | Migration and administrative data from the Islandora-to-Alma move. |
-| `identifier` `alma:…` value | Superseded by `originating_system_id`. |
+| `dc:identifier` `alma:…` value | Superseded by `originating_system_id`. |
 
 ## Open questions
 
@@ -100,6 +104,7 @@ Add new entries at the top. Record the date, the column(s), what changed in the 
 
 | Date | Column(s) | Decision | Reason |
 | --- | --- | --- | --- |
+| 2026-10-01 | all metadata-sourced columns | Sources switched to qualified keys (`dc:*`, `dcterms:*`, with `xsi:type`). Added `combine`. Subjects now come only from `dcterms:subject`; `type` from `dcterms:type (dcterms:DCMIType)`. | GEMS previously merged `dc:` and `dcterms:` elements and dropped `xsi:type`, which mixed alternate titles into subjects and legacy types into DCMI types. |
 | 2026-09-30 | objectid, parentid | `objectid` is `<slug>_dg_<n>`, persisted in the manifest (D5). Resolves Q1. | Matches site convention. |
 | 2026-09-30 | object_location, image_small, image_thumb | Rules removed; left blank (D6). Resolves Q2, Q3. | DART defines hosting and derivative fields. |
 | 2026-09-30 | all | Initial map (D1–D4 and the column table above). | Built from the Social Justice at Grinnell manifest `2026-09-30_14-04-05_CDT`. |
