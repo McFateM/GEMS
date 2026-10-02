@@ -9,7 +9,13 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 
 from gems.mods import read_legacy_mods
-from gems.pipeline import normalize_records, process_export, process_records, representation_items
+from gems.pipeline import (
+    is_meaningless_name,
+    normalize_records,
+    process_export,
+    process_records,
+    representation_items,
+)
 
 
 class PipelineTests(unittest.TestCase):
@@ -140,16 +146,17 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(("grinnell:10", "http://hdl.handle.net/11084/10"), (parent["identifier"], parent["Item Permalink"]))
             self.assertEqual(("Public Domain", "http://rightsstatements.org/vocab/NoC-US/1.0/"), (parent["rights"], parent["Standardized Rights"]))
             self.assertEqual("", parent["image_thumb"])
-            # DART convention: a compound parent's original_file_name is "_" + the first child's name.
-            self.assertEqual("_grinnell_11_OBJ.jpg", parent["original_file_name"])
-            self.assertEqual("grinnell_11_OBJ.jpg; grinnell_12_OBJ.jpg", parent["Filename"])
+            # DART conventions: children are a `<stem>-NN` sequence on the record's own grinnell PID
+            # (D12), and the compound parent's original_file_name is "_" + the first child's name.
+            self.assertEqual("_grinnell_12-01.jpg", parent["original_file_name"])
+            self.assertEqual("grinnell_12-01.jpg; grinnell_12-02.jpg", parent["Filename"])
             self.assertEqual((parent["objectid"], "image"), (first["parentid"], first["display_template"]))
             self.assertEqual(("Photo 11", "rep11", "grinnell:11"), (first["title"], first["originating_system_id"], first["identifier"]))
             self.assertEqual(("", "image/jpeg"), (first["object_location"], first["format"]))
             self.assertEqual("", first["description"])
             self.assertEqual("Public Domain", first["rights"])
-            self.assertEqual("grinnell_11_OBJ.jpg", first["original_file_name"])
-            self.assertEqual((parent["objectid"], "grinnell_12_OBJ.jpg"), (second["parentid"], second["original_file_name"]))
+            self.assertEqual("grinnell_12-01.jpg", first["original_file_name"])
+            self.assertEqual((parent["objectid"], "grinnell_12-02.jpg"), (second["parentid"], second["original_file_name"]))
             self.assertEqual(("", "pdf", "Text"), (single["parentid"], single["display_template"], single["type"]))
             # A fileless bib is a 'record' row; its original_file_name borrows the objectid so DART can key it.
             self.assertEqual(("", "record"), (rec["parentid"], rec["display_template"]))
@@ -178,8 +185,8 @@ class PipelineTests(unittest.TestCase):
             records = [
                 # The TIFF sorts first naturally, but the parent borrows the JPG.
                 record("991", "2001_scan.tiff", "photo.jpg"),
-                # TIFFs only: the parent borrows the first child.
-                record("992", "b_master.tiff", "a_master.tiff"),
+                # TIFFs only, with a PID-bearing label: the stem is the PID.
+                record("992", "grinnell_12_highres.tiff", "grinnell_12_lowres.tiff"),
                 # No images at all: the parent borrows the first child.
                 record("993", "doc1.pdf", "doc2.pdf"),
             ]
@@ -189,12 +196,67 @@ class PipelineTests(unittest.TestCase):
             with result.csv_path.open(encoding="utf-8", newline="") as handle:
                 rows = list(csv.DictReader(handle))
             parents = [row for row in rows if row["display_template"] == "compound_object"]
-            self.assertEqual(["_photo.jpg", "_a_master.tiff", "_doc1.pdf"],
+            self.assertEqual(["_2001_scan-02.jpg", "_grinnell_12-01.tiff", "_doc1-01.pdf"],
                              [row["original_file_name"] for row in parents])
-            # Child rows stay in natural filename order (the TIFF is still 991's first child).
+            # Children are renumbered in natural filename order (the TIFF is still 991's first child).
             children = [row["original_file_name"] for row in rows if row["parentid"]]
-            self.assertEqual(["2001_scan.tiff", "photo.jpg", "a_master.tiff", "b_master.tiff", "doc1.pdf", "doc2.pdf"],
+            self.assertEqual(["2001_scan-01.tiff", "2001_scan-02.jpg", "grinnell_12-01.tiff", "grinnell_12-02.tiff",
+                              "doc1-01.pdf", "doc1-02.pdf"], children)
+
+    def test_long_numeric_alma_names_are_rebuilt_from_record_context(self):
+        field_map = {"columns": ["objectid", "parentid", "display_template", "original_file_name"], "rules": {
+            "objectid": {"from": "gems.objectid", "child": "inherit"},
+            "parentid": {"from": "gems.parentid", "child": "inherit"},
+            "display_template": {"from": "gems.display_template", "child": "inherit"},
+            "original_file_name": {"from": "gems.filename", "child": "inherit"},
+        }}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+
+            def record(mms_id, metadata, *entries):
+                representations, files = [], []
+                for pid, stored, content in entries:
+                    path = tmp / f"{mms_id}-{pid}-{stored}"
+                    path.write_text(content, encoding="utf-8")
+                    representations.append({"id": f"rep-{pid}", "files": {"representation_file": [
+                        {"pid": pid, "label": stored, "url": str(path), "path": f"store/{pid}/{stored}"}]}})
+                    files.append({"source": str(path), "filename": stored})
+                return {"mms_id": mms_id, "metadata": metadata, "representations": representations, "files": files}
+
+            records = [
+                # The GHM pattern: an MMS-ID-named access image beside a meaningfully named master.
+                record("991", {"dc:identifier": "grinnell:21716", "dc:title": "Barn"},
+                       ("f1", "991011591179304641.jpg", "access"), ("f2", "grinnell_21716_OBJ.tiff", "master")),
+                # Every name numeric-only: rebuilt from the record's legacy grinnell PID.
+                record("992", {"dc:identifier": "grinnell:109", "dc:title": "Symposium"},
+                       ("f3", "991011532686604641.jpg", "one"), ("f4", "991011532686604642.tiff", "two")),
+                # No PID either: rebuilt from the slugified title.
+                record("993", {"dc:title": "Horses and wagon in Grinnell"},
+                       ("f5", "991011591182304641.jpg", "front"), ("f6", "991011591182304642.jpg", "back")),
+            ]
+
+            result = process_records(records, tmp / "out", field_map=field_map)
+
+            self.assertEqual(6, result.file_count)
+            self.assertEqual([], result.renamed_files)
+            with result.csv_path.open(encoding="utf-8", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            parents = [row for row in rows if not row["parentid"]]
+            children = [row["original_file_name"] for row in rows if row["parentid"]]
+            # Every compound's children are one obvious `<stem>-NN` sequence (D12); the MMS-ID-named
+            # access image joins its master's stem, so each pair shares one DART base.
+            self.assertEqual(["grinnell_21716-01.jpg", "grinnell_21716-02.tiff",
+                              "grinnell_109-01.jpg", "grinnell_109-02.tiff",
+                              "horses-and-wagon-in-grinnell-01.jpg", "horses-and-wagon-in-grinnell-02.jpg"],
                              children)
+            # Parents borrow a meaningful, web-friendly child name (never the TIFF master).
+            self.assertEqual(["_grinnell_21716-01.jpg", "_grinnell_109-01.jpg", "_horses-and-wagon-in-grinnell-01.jpg"],
+                             [row["original_file_name"] for row in parents])
+            # The files on disk carry exactly the names the CSV reports.
+            self.assertEqual(set(children), {path.name for path in (tmp / "out" / "objects").iterdir()})
+            # Short numeric stems are sequence numbers, not MMS IDs, so they are left alone.
+            self.assertFalse(is_meaningless_name("991.jpg"))
+            self.assertTrue(is_meaningless_name("991011591179304641.jpg"))
 
     def test_template_objectids_are_persisted_and_unique_across_batches(self):
         field_map = {"columns": ["objectid", "parentid"], "rules": {
@@ -327,11 +389,11 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(["Title 3", "Title 4"], titles())
 
             process_records(records, out, field_map=field_map, start=1, limit=2)
-            self.assertEqual(["Title 1", "Title 2", "p-1.jpg", "p-2.jpg", "Title 3", "Title 4"], titles())
+            self.assertEqual(["Title 1", "Title 2", "p-1-01.jpg", "p-1-02.jpg", "Title 3", "Title 4"], titles())
 
             records[0]["metadata"]["dc:title"] = "Title 1 revised"
             process_records(records, out, field_map=field_map, start=1, limit=1)
-            self.assertEqual(["Title 1 revised", "Title 2", "p-1.jpg", "p-2.jpg", "Title 3", "Title 4"], titles())
+            self.assertEqual(["Title 1 revised", "Title 2", "p-1-01.jpg", "p-1-02.jpg", "Title 3", "Title 4"], titles())
 
             with self.assertRaisesRegex(ValueError, "Start record 5 exceeds 4 available record"):
                 process_records(records, out, field_map=field_map, start=5)
@@ -384,17 +446,17 @@ class PipelineTests(unittest.TestCase):
 
             self.assertEqual(4, result.file_count)
             self.assertEqual(
-                ["grinnell_1_MEDIATRACK.vtt", "grinnell_1_OBJ.mp3", "grinnell_2_MEDIATRACK.vtt", "grinnell_2_OBJ.mp3"],
+                ["grinnell_1-01.vtt", "grinnell_1-02.mp3", "grinnell_2-01.vtt", "grinnell_2-02.mp3"],
                 sorted(path.name for path in (tmp / "out" / "objects").iterdir()),
             )
-            self.assertEqual("captions 2", (tmp / "out" / "objects" / "grinnell_2_MEDIATRACK.vtt").read_text(encoding="utf-8"))
+            self.assertEqual("captions 2", (tmp / "out" / "objects" / "grinnell_2-01.vtt").read_text(encoding="utf-8"))
             self.assertEqual("v2", representation_items(records[1])[0]["file_pid"])
 
             records[1]["representations"][0]["files"]["representation_file"][0]["path"] = "store/z/grinnell_1_MEDIATRACK.vtt"
             result = process_records(records, tmp / "out2", field_map=field_map)
-            self.assertEqual(["grinnell_1_MEDIATRACK_v2.vtt"], result.renamed_files)
-            self.assertEqual("captions 2", (tmp / "out2" / "objects" / "grinnell_1_MEDIATRACK_v2.vtt").read_text(encoding="utf-8"))
-            self.assertEqual("captions 1", (tmp / "out2" / "objects" / "grinnell_1_MEDIATRACK.vtt").read_text(encoding="utf-8"))
+            self.assertEqual(["grinnell_1-01_v2.vtt", "grinnell_1-02_m2.mp3"], result.renamed_files)
+            self.assertEqual("captions 2", (tmp / "out2" / "objects" / "grinnell_1-01_v2.vtt").read_text(encoding="utf-8"))
+            self.assertEqual("captions 1", (tmp / "out2" / "objects" / "grinnell_1-01.vtt").read_text(encoding="utf-8"))
 
     def test_same_named_files_are_renamed_once_and_kept_stable_in_the_manifest(self):
         field_map = {"columns": ["objectid", "parentid", "original_file_name"], "rules": {
@@ -419,8 +481,8 @@ class PipelineTests(unittest.TestCase):
                 # Two different scans with the same name in one record.
                 record("991", file_entry("991", "p1", "991.jpg", "front"), file_entry("991", "p2", "991.jpg", "back")),
                 # The same image in a compound record and in its own record.
-                record("992", file_entry("992", "p3", "g_1_OBJ.jpg", "photo"), file_entry("992", "p4", "g_2_OBJ.jpg", "other")),
-                record("993", file_entry("993", "p5", "g_1_OBJ.jpg", "photo")),
+                record("992", file_entry("992", "p3", "grinnell_7_high.jpg", "photo"), file_entry("992", "p4", "grinnell_7_low.jpg", "other")),
+                record("993", file_entry("993", "p5", "grinnell_7_high.jpg", "photo")),
             ]
             group = tmp / "collection-x" / "run"
             group.mkdir(parents=True)
@@ -429,16 +491,19 @@ class PipelineTests(unittest.TestCase):
 
             result = process_export(manifest, group, field_map=field_map)
 
-            self.assertEqual(["991_p2.jpg", "g_1_OBJ_p5.jpg"], result.renamed_files)
+            # No clash: 992's children are sequenced to grinnell_7-01/02, leaving grinnell_7_high.jpg free.
+            self.assertEqual([], result.renamed_files)
             objects = group / "objects"
-            self.assertEqual(("front", "back"), ((objects / "991.jpg").read_text(), (objects / "991_p2.jpg").read_text()))
-            self.assertEqual("photo", (objects / "g_1_OBJ_p5.jpg").read_text())
+            self.assertEqual(("front", "back"), ((objects / "991-01.jpg").read_text(), (objects / "991-02.jpg").read_text()))
+            self.assertEqual("photo", (objects / "grinnell_7_high.jpg").read_text())
+            self.assertEqual("photo", (objects / "grinnell_7-01.jpg").read_text())
             saved = json.loads(manifest.read_text(encoding="utf-8"))["records"]
-            self.assertEqual({"p2": "991_p2.jpg"}, saved[0]["gems_filenames"])
+            self.assertNotIn("gems_filenames", saved[2])
             with result.csv_path.open(encoding="utf-8", newline="") as handle:
                 names = [row["original_file_name"] for row in csv.DictReader(handle)]
-            self.assertIn("991_p2.jpg", names)
-            self.assertIn("g_1_OBJ_p5.jpg", names)
+            self.assertIn("991-01.jpg", names)
+            self.assertIn("grinnell_7-01.jpg", names)
+            self.assertIn("grinnell_7_high.jpg", names)
 
             again = process_export(manifest, group, field_map=field_map)
             self.assertEqual([], again.renamed_files)
@@ -478,15 +543,17 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(2, len(rows))
             first = rows[0]
             self.assertEqual(("transcript", "", "Sound", "audio/mpeg"), (first["display_template"], first["parentid"], first["type"], first["format"]))
-            self.assertEqual("grinnell_1_OBJ.mp3", first["original_file_name"])
-            self.assertEqual("grinnell_1_OBJ.mp3; grinnell_1_MEDIATRACK.vtt", first["Filename"])
-            with (out / "transcripts" / f"{first['objectid']}.csv").open(encoding="utf-8", newline="") as handle:
+            # Files are renamed as a `<stem>-NN` sequence (D12); captions are still recognized (D8).
+            self.assertEqual("grinnell_1-02.mp3", first["original_file_name"])
+            self.assertEqual("grinnell_1-02.mp3; grinnell_1-01.vtt", first["Filename"])
+            # The timed-text CSV is named for the media file, per the site's transcript layout.
+            with (out / "transcripts" / "grinnell_1-02.csv").open(encoding="utf-8", newline="") as handle:
                 self.assertEqual([
                     {"timestamp": "00:00:00", "speaker": "Judy Hunter", "words": "Let me see if it\u2019s on."},
                     {"timestamp": "01:00:41", "speaker": "Judy Hunter", "words": "Oh."},
                     {"timestamp": "01:00:41", "speaker": "Geoff", "words": "That's a mile west."},
                 ], list(csv.DictReader(handle)))
-            with (out / "transcripts" / f"{rows[1]['objectid']}.csv").open(encoding="utf-8", newline="") as handle:
+            with (out / "transcripts" / "grinnell_2-01.csv").open(encoding="utf-8", newline="") as handle:
                 self.assertEqual([{"timestamp": "00:00:13", "speaker": "Interviewer - Jim Gordon", "words": "State your name?"}],
                                  list(csv.DictReader(handle)))
 

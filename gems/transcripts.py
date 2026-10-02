@@ -20,6 +20,16 @@ def is_transcript_file(filename: str) -> bool:
     return name.endswith(".vtt") or (name.endswith(".xml") and "transcript" in name)
 
 
+def transcript_candidates(items: list[dict[str, str]]) -> list[dict[str, str]]:
+    """The caption items of an oral history, identified before export renaming (D12): the original
+    Alma names carry the .vtt/TRANSCRIPT markers that sequenced names drop."""
+    return [item for item in items if is_transcript_file(item.get("original_name") or item["filename"])]
+
+
+def transcript_csv_path(objects_dir: Path, filename: str) -> Path:
+    return objects_dir.parent / "transcripts" / f"{Path(filename).stem}.csv"
+
+
 def format_timestamp(seconds: float) -> str:
     whole = int(seconds)
     return f"{whole // 3600:02d}:{whole % 3600 // 60:02d}:{whole % 60:02d}"

@@ -43,7 +43,7 @@
     "identifier": {
       "from": "metadata.dc:identifier",
       "match": "^grinnell:\\d+$",
-      "child": {"from": "gems.filename", "extract": "^(grinnell_\\d+)_", "replace": ["^grinnell_", "grinnell:"]}
+      "child": {"from": "gems.original_name", "extract": "(grinnell_\\d+)", "replace": ["^grinnell_", "grinnell:"]}
     },
     "Filename": {"from": "gems.filenames", "child": "inherit"},
     "Item Permalink": {"from": ["metadata.dcterms:identifier (dcterms:URI)", "metadata.dc:identifier"], "match": "^https?://hdl\\.handle\\.net/"},

@@ -20,7 +20,7 @@ from urllib.request import urlretrieve
 from common_dg_utilities import ensure_key, is_valid_key
 
 from .mods import LEGACY_PID, find_legacy_mods, read_legacy_mods
-from .transcripts import is_transcript_file, write_transcript_csv
+from .transcripts import is_transcript_file, transcript_candidates, transcript_csv_path, write_transcript_csv
 
 COLLECTIONBUILDER_FIELDS = [
     "key",
@@ -502,11 +502,11 @@ def map_to_template(
                 fetch_object(source, destination)
             count += 1
         media = [item for item in items if file_context(item)["display_template"] in {"audio", "video"}]
-        transcripts = [item for item in items if is_transcript_file(item["filename"])]
+        transcripts = transcript_candidates(items)
         if (
             len(media) == 1 and transcripts and len(media) + len(transcripts) == len(items)
             # Oral history: one transcript item plays the media and reads its timed text from transcripts/<objectid>.csv.
-            and write_transcript_csv(objects_dir / transcripts[0]["filename"], objects_dir.parent / "transcripts" / f"{record_id}.csv")
+            and write_transcript_csv(objects_dir / transcripts[0]["filename"], transcript_csv_path(objects_dir, media[0]["filename"]))
         ):
             parent = file_context(media[0])
             parent.update(
@@ -578,15 +578,39 @@ def representation_items(record: dict[str, Any]) -> list[dict[str, str]]:
                 by_source[source] = detail
             if file_info.get("label"):
                 by_label.setdefault(str(file_info["label"]), []).append(detail)
-    items = []
-    overrides = record.get("gems_filenames") if isinstance(record.get("gems_filenames"), dict) else {}
+    candidates: list[tuple[int, dict[str, str], dict[str, str], str]] = []
     for index, file_info in enumerate(extract_files(record), start=1):
         labelled = by_label.get(file_info["filename"], [])
         detail = by_source.get(file_info["source"]) or (labelled[0] if len(labelled) == 1 else {})
         name = detail.get("stored_name", "")
         name = name if "." in name else file_info["filename"]
+        candidates.append((index, file_info, detail, name))
+    # DART groups compound children by shared filename bases (GEMS_FILENAME_RULES.md), so a long
+    # numeric-only Alma name (an MMS ID or file PID, e.g. 991011591179304641.jpg) is rebuilt from
+    # record context before any clash resolution sees it.
+    anchor = meaningful_anchor(record, [name for _, _, _, name in candidates])
+    # And every compound's children are renumbered as a `<stem>-NN` sequence (D12): natural order,
+    # unique trailing numbers, so a DART folder scan sees one obvious sequence per compound instead
+    # of one giant sequence across unrelated compounds sharing the collection's naming scheme.
+    sequenced: dict[int, str] = {}
+    if len(candidates) > 1:
+        stem = compound_stem(record, [name for _, _, _, name in candidates], anchor)
+        in_order = sorted(candidates, key=lambda candidate: [
+            int(token) if token.isdigit() else token.lower()
+            for token in re.split(r"(\d+)", candidate[3])
+        ])
+        for position, (index, _, _, name) in enumerate(in_order, start=1):
+            sequenced[index] = f"{stem}-{position:02d}{Path(name).suffix}"
+    items = []
+    overrides = record.get("gems_filenames") if isinstance(record.get("gems_filenames"), dict) else {}
+    for index, file_info, detail, name in candidates:
+        if is_meaningless_name(name):
+            name = f"{anchor}{Path(name).suffix}"
+        original_name = name
+        name = sequenced.get(index, name)
         items.append({
             "source": file_info["source"],
+            "original_name": original_name,
             **{key: value for key, value in detail.items() if key != "stored_name"},
             "filename": overrides.get(detail.get("file_pid") or file_info["source"]) or safe_filename(name, index),
         })
@@ -639,6 +663,7 @@ def file_context(item: dict[str, str]) -> dict[str, str]:
     return {
         "filename": item["filename"],
         "filenames": item["filename"],
+        "original_name": item.get("original_name", ""),
         "label": item.get("label", ""),
         "representation_id": item.get("representation_id", ""),
         "mime_type": mime_type,
@@ -777,6 +802,54 @@ def infer_filename(source: str, fallback_index: int) -> str:
     parsed = urlparse(source)
     candidate = Path(unquote(parsed.path or source)).name
     return candidate or f"object-{fallback_index}"
+
+
+MEANINGLESS_STEM = re.compile(r"\d{10,}")
+
+
+def is_meaningless_name(filename: str) -> bool:
+    """True when the stem is one long number: an Alma MMS ID or file PID carrying no meaning."""
+    return bool(MEANINGLESS_STEM.fullmatch(Path(filename).stem))
+
+
+def meaningful_anchor(record: dict[str, Any], names: list[str]) -> str:
+    """The stem used to rebuild meaningless filenames in a record (GEMS_FILENAME_RULES.md): the first
+    meaningful sibling name, so masters and access images share a DART base; else the record's legacy
+    grinnell PID; else its slugified title. Empty when the record offers nothing better."""
+    for name in names:
+        if Path(name).stem and not is_meaningless_name(name):
+            return Path(name).stem
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    identifiers = stringify(metadata.get("dc:identifier") or metadata.get("identifier")).split(";")
+    pid = next((value.strip() for value in identifiers if LEGACY_PID.match(value.strip())), "")
+    if pid:
+        return pid.replace(":", "_")
+    return slugify(stringify(metadata.get("dc:title") or metadata.get("dcterms:title")))[:40].strip("-")
+
+
+GRINNELL_NUMBER = re.compile(r"grinnell_(\d+)")
+
+# Pluralized title slugs that would group unrelated compounds in a DART folder scan.
+GENERIC_COMPOUND_STEMS = {"photographs", "photos", "images", "documents", "papers", "pictures", "scans", "files"}
+
+
+def compound_stem(record: dict[str, Any], names: list[str], anchor: str) -> str:
+    """The base of a compound's `<stem>-NN` child filenames (D12): the grinnell PID found in any of
+    the record's own names or in its identifiers (bibliographic-level, e.g. grinnell_26615, so master
+    and access files keep one stem), else the meaningful anchor — unless it is a generic pluralized
+    title slug — else the record's objectid."""
+    for name in names:
+        found = GRINNELL_NUMBER.search(name)
+        if found:
+            return f"grinnell_{found.group(1)}"
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    identifiers = stringify(metadata.get("dc:identifier") or metadata.get("identifier")).split(";")
+    pid = next((value.strip() for value in identifiers if LEGACY_PID.match(value.strip())), "")
+    if pid:
+        return pid.replace(":", "_")
+    if anchor and anchor not in GENERIC_COMPOUND_STEMS:
+        return anchor
+    return stringify(record.get("objectid"))
 
 
 def safe_filename(filename: str, index: int) -> str:
