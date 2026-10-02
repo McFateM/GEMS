@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 from hashlib import sha256
 from datetime import datetime
 from pathlib import Path
@@ -12,7 +13,7 @@ import flet as ft
 from dotenv import load_dotenv
 
 from .alma import AlmaClient
-from .pipeline import is_template_map, process_export
+from .pipeline import ExportCancelled, is_template_map, process_export
 
 APP_TITLE = "GEMS - Gather, Export, Map, Serialize"
 DATA_DIR = Path.home() / ".GEMS-data"
@@ -137,6 +138,15 @@ def main(page: ft.Page) -> None:
         width=320,
     )
     status = ft.Text("Ready", expand=True)
+    progress_bar = ft.ProgressBar(value=0, visible=False, expand=True)
+    export_cancel_requested = threading.Event()
+    export_thread: threading.Thread | None = None
+
+    def refresh_ui() -> None:
+        try:
+            page.update()
+        except (AttributeError, TypeError):
+            pass
 
     def report(message: str, *, error: bool = False, success: bool = False) -> None:
         status.value = message
@@ -145,7 +155,7 @@ def main(page: ft.Page) -> None:
             logger.exception(message)
         else:
             logger.info(message)
-        page.update()
+        refresh_ui()
 
     def close_run_log() -> None:
         nonlocal run_log_handler, active_log_path
@@ -293,9 +303,28 @@ def main(page: ft.Page) -> None:
             raise ValueError("The field map must be a template map or a JSON object with string field names and values.")
         return field_map
 
+    export_button = ft.FilledButton(
+        "2) Map and Export Manifest to CSV",
+        icon=ft.Icons.PLAY_ARROW,
+        on_click=lambda e: run_export(e),
+    )
+    cancel_button = ft.OutlinedButton(
+        "Cancel",
+        icon=ft.Icons.STOP,
+        visible=False,
+        on_click=lambda e: cancel_export(e),
+    )
+
+    def cancel_export(_: ft.ControlEvent) -> None:
+        export_cancel_requested.set()
+        report("Cancelling after the current file…")
+
     def run_export(_: ft.ControlEvent) -> None:
+        nonlocal export_thread
+        if export_thread is not None and export_thread.is_alive():
+            report("An export is already running; cancel it or wait for it to finish.", error=True)
+            return
         try:
-            report("Mapping and exporting manifest...")
             if not source_field.value:
                 raise ValueError("Choose a prepared export manifest.")
             try:
@@ -315,33 +344,72 @@ def main(page: ft.Page) -> None:
             legacy_mods = (legacy_mods_field.value or "").strip()
             if legacy_mods and not Path(legacy_mods).is_dir():
                 raise ValueError(f"Legacy MODS folder not found: {legacy_mods}")
-            result = process_export(
-                manifest_path,
-                manifest_path.parent,
-                field_map=field_map,
-                legacy_mods_dir=legacy_mods or None,
-                start=start,
-                limit=limit,
-                refresh_source=AlmaClient().refresh_file_link,
-                objectid_prefix=(prefix_field.value or "").strip() or None,
-                page=page,
-            )
-            update_settings()
-            for name in result.renamed_files:
-                logger.warning("Renamed to avoid a filename clash with a different Alma file: %s", name)
-            renamed_note = (
-                f" {len(result.renamed_files)} file(s) shared a name with a different file and were saved with their "
-                "Alma file ID appended; see the activity log."
-                if result.renamed_files else ""
-            )
-            report(
-                f"Mapped records {result.first_record}–{result.last_record} of {result.total_records}: "
-                f"{result.file_count} file(s); CSV now has {result.row_count} row(s). "
-                f"Results saved to {result.csv_path.parent}.{renamed_note}",
-                success=True,
-            )
-        except Exception as exc:  # pragma: no cover - UI feedback wrapper
-            report(f"Export failed: {exc}", error=True)
+        except Exception as exc:
+            report(str(exc), error=True)
+            return
+
+        export_cancel_requested.clear()
+        export_button.disabled = True
+        cancel_button.visible = True
+        progress_bar.visible = True
+        progress_bar.value = 0
+        refresh_ui()
+
+        def on_progress(name: str, done: int, total: int) -> None:
+            progress_bar.value = done / total if total else 0
+            status.value = f"Mapping and exporting… file {min(done + 1, total)} of {total}: {name}"
+            status.color = ft.Colors.BLACK87
+            refresh_ui()
+
+        def work() -> None:
+            nonlocal export_thread
+            try:
+                report("Mapping and exporting manifest...")
+                result = process_export(
+                    manifest_path,
+                    manifest_path.parent,
+                    field_map=field_map,
+                    legacy_mods_dir=legacy_mods or None,
+                    start=start,
+                    limit=limit,
+                    refresh_source=AlmaClient().refresh_file_link,
+                    objectid_prefix=(prefix_field.value or "").strip() or None,
+                    progress=on_progress,
+                    is_cancelled=export_cancel_requested.is_set,
+                    page=page,
+                )
+                update_settings()
+                for name in result.renamed_files:
+                    logger.warning("Renamed to avoid a filename clash with a different Alma file: %s", name)
+                renamed_note = (
+                    f" {len(result.renamed_files)} file(s) shared a name with a different file and were saved with their "
+                    "Alma file ID appended; see the activity log."
+                    if result.renamed_files else ""
+                )
+                report(
+                    f"Mapped records {result.first_record}–{result.last_record} of {result.total_records}: "
+                    f"{result.file_count} file(s); CSV now has {result.row_count} row(s). "
+                    f"Results saved to {result.csv_path.parent}.{renamed_note}",
+                    success=True,
+                )
+            except ExportCancelled:
+                report("Export cancelled. Files already downloaded stay in objects/; re-run to continue where it left off.")
+            except Exception as exc:  # pragma: no cover - UI feedback wrapper
+                report(f"Export failed: {exc}", error=True)
+            finally:
+                export_button.disabled = False
+                cancel_button.visible = False
+                progress_bar.visible = False
+                progress_bar.value = 0
+                refresh_ui()
+                export_thread = None
+
+        # Run off the UI thread only for a real Flet page; mock-page tests drive it synchronously.
+        if isinstance(page, ft.Page):
+            export_thread = threading.Thread(target=work, daemon=True)
+            export_thread.start()
+        else:
+            work()
 
     def fetch_alma_records(_: ft.ControlEvent) -> None:
         nonlocal alma_records, retrieved_title, retrieved_set_id, retrieved_collection_id
@@ -494,13 +562,11 @@ def main(page: ft.Page) -> None:
                         ]
                     ),
                     ft.Row([start_field, limit_field, prefix_field]),
+                    progress_bar,
                     ft.Row(
                         [
-                            ft.FilledButton(
-                                "2) Map and Export Manifest to CSV",
-                                icon=ft.Icons.PLAY_ARROW,
-                                on_click=run_export,
-                            ),
+                            export_button,
+                            cancel_button,
                         ],
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),

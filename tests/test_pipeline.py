@@ -10,6 +10,7 @@ from urllib.error import HTTPError
 
 from gems.mods import read_legacy_mods
 from gems.pipeline import (
+    ExportCancelled,
     is_meaningless_name,
     normalize_records,
     process_export,
@@ -257,6 +258,48 @@ class PipelineTests(unittest.TestCase):
             # Short numeric stems are sequence numbers, not MMS IDs, so they are left alone.
             self.assertFalse(is_meaningless_name("991.jpg"))
             self.assertTrue(is_meaningless_name("991011591179304641.jpg"))
+
+    def test_export_cancellation_stops_after_the_current_file(self):
+        field_map = {"columns": ["objectid", "original_file_name"], "rules": {
+            "objectid": {"from": "gems.objectid", "child": "inherit"},
+            "original_file_name": {"from": "gems.filename", "child": "inherit"},
+        }}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            files = []
+            for number in range(1, 4):
+                path = tmp / f"scan-{number}.jpg"
+                path.write_text(f"photo {number}", encoding="utf-8")
+                files.append({"source": str(path), "filename": path.name})
+            records = [{"mms_id": "991", "files": files}]
+            progress_calls = []
+            cancelled_after_first = {"seen": 0}
+
+            def progress(name, done, total):
+                progress_calls.append((name, done, total))
+
+            def is_cancelled():
+                return cancelled_after_first["seen"] >= 1
+
+            real_fetch = __import__("gems.pipeline", fromlist=["fetch_object"]).fetch_object
+
+            def fetch_and_flag(source, destination):
+                real_fetch(source, destination)
+                cancelled_after_first["seen"] += 1
+
+            with patch("gems.pipeline.fetch_object", side_effect=fetch_and_flag):
+                with self.assertRaises(ExportCancelled):
+                    process_records(records, tmp / "out", field_map=field_map,
+                                    progress=progress, is_cancelled=is_cancelled)
+            # The first file completed; the run stopped before the rest.
+            self.assertEqual(["scan-1-01.jpg"], [path.name for path in (tmp / "out" / "objects").iterdir()])
+            self.assertTrue(progress_calls)
+            self.assertEqual(3, progress_calls[0][2])
+
+            # Re-running resumes: the finished file is skipped, the rest are fetched.
+            result = process_records(records, tmp / "out", field_map=field_map)
+            self.assertEqual(3, result.file_count)
+            self.assertEqual(3, len(list((tmp / "out" / "objects").iterdir())))
 
     def test_template_objectids_are_persisted_and_unique_across_batches(self):
         field_map = {"columns": ["objectid", "parentid"], "rules": {

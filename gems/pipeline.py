@@ -80,6 +80,12 @@ class ExportResult:
 
 
 RefreshSource = Callable[[dict[str, Any], dict[str, str]], str]
+ProgressCallback = Callable[[str, int, int], None]
+CancelCheck = Callable[[], bool]
+
+
+class ExportCancelled(Exception):
+    """Raised when the user cancels a map-and-export run; partial output stays on disk."""
 
 
 def process_export(
@@ -93,6 +99,8 @@ def process_export(
     limit: int | None = None,
     refresh_source: RefreshSource | None = None,
     objectid_prefix: str | None = None,
+    progress: ProgressCallback | None = None,
+    is_cancelled: CancelCheck | None = None,
     page: Any | None = None,
 ) -> ExportResult:
     source = Path(source_path)
@@ -124,7 +132,8 @@ def process_export(
         records = load_payload(source)
     result = process_records(
         records, output_dir, field_map=field_map, source_system=source_system, legacy_mods_dir=legacy_mods_dir,
-        start=start, limit=limit, refresh_source=refresh_source, objectid_prefix=objectid_prefix, page=page,
+        start=start, limit=limit, refresh_source=refresh_source, objectid_prefix=objectid_prefix,
+        progress=progress, is_cancelled=is_cancelled, page=page,
     )
     result.renamed_files = renamed + result.renamed_files
     return result
@@ -141,6 +150,8 @@ def process_records(
     limit: int | None = None,
     refresh_source: RefreshSource | None = None,
     objectid_prefix: str | None = None,
+    progress: ProgressCallback | None = None,
+    is_cancelled: CancelCheck | None = None,
     page: Any | None = None,
 ) -> ExportResult:
     if start < 1 or (limit is not None and limit < 1):
@@ -161,7 +172,7 @@ def process_records(
         assign_objectids(records, slugify(objectid_prefix) if objectid_prefix else "", used_dg_numbers(records))
         rows, exported_files = map_to_template(
             selected, field_map, destination / "objects", Path(legacy_mods_dir) if legacy_mods_dir else None,
-            refresh_source,
+            refresh_source, progress=progress, is_cancelled=is_cancelled,
         )
         rows = merge_batch_rows(rows, csv_path, columns, records)
     else:
@@ -480,6 +491,9 @@ def map_to_template(
     objects_dir: Path,
     legacy_mods_dir: Path | None = None,
     refresh_source: RefreshSource | None = None,
+    *,
+    progress: ProgressCallback | None = None,
+    is_cancelled: CancelCheck | None = None,
 ) -> tuple[list[dict[str, str]], int]:
     """Build one row per record, plus child rows for records with several files (CollectionBuilder compound objects)."""
     columns = [str(column) for column in template_map["columns"]]
@@ -488,18 +502,29 @@ def map_to_template(
     objects_dir.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, str]] = []
     count = 0
-    for record in records:
+    total_files = sum(len(representation_items(record)) for record in records)
+    done = 0
+    if progress is not None:
+        progress("Mapping", 0, max(total_files, 1))
+    for record_index, record in enumerate(records, start=1):
+        if is_cancelled is not None and is_cancelled():
+            raise ExportCancelled()
         metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
         record_id = str(record["objectid"])
         mods = legacy_mods_loader(metadata, legacy_mods_dir)
         items = representation_items(record)
         for item in items:
+            if is_cancelled is not None and is_cancelled():
+                raise ExportCancelled()
             destination = objects_dir / item["filename"]
+            if progress is not None:
+                progress(item["filename"], done, max(total_files, 1))
             if not destination.exists():
                 source = item["source"]
                 if refresh_source is not None and link_expired(source):
                     source = refresh_source(record, item)
                 fetch_object(source, destination)
+            done += 1
             count += 1
         media = [item for item in items if file_context(item)["display_template"] in {"audio", "video"}]
         transcripts = transcript_candidates(items)
