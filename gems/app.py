@@ -308,16 +308,20 @@ def main(page: ft.Page) -> None:
         icon=ft.Icons.PLAY_ARROW,
         on_click=lambda e: run_export(e),
     )
-    cancel_button = ft.OutlinedButton(
-        "Cancel",
-        icon=ft.Icons.STOP,
+    cancel_button = ft.ElevatedButton(
+        "Kill Switch",
+        icon=ft.Icons.CANCEL,
+        color=ft.Colors.WHITE,
+        bgcolor=ft.Colors.RED_700,
+        tooltip="Emergency stop - halts the export after the current file",
         visible=False,
         on_click=lambda e: cancel_export(e),
     )
 
     def cancel_export(_: ft.ControlEvent) -> None:
         export_cancel_requested.set()
-        report("Cancelling after the current file…")
+        logger.warning("KILL SWITCH ACTIVATED")
+        report("Kill switch activated - stopping after the current file…")
 
     def run_export(_: ft.ControlEvent) -> None:
         nonlocal export_thread
