@@ -61,6 +61,8 @@ Each entry in `rules` is keyed by an output column. Columns without a rule are l
 
 - **D12. Compound children are renumbered as a `<stem>-NN` sequence.** DART groups compounds purely by shared filename bases (GEMS_FILENAME_RULES.md), and per-file PIDs like `grinnell_21716_OBJ.jpg`, `grinnell_21717_OBJ.jpg`, … from unrelated compounds look like one giant sequence in a folder scan — one DART run merged 130+ files into a single compound. So every multi-file bib's files are renamed on export: the `<stem>` is the record's own grinnell PID (the smallest one among its files, or from `dc:identifier`), else the record's meaningful anchor, else its objectid — never a generic title slug like `photographs`, which would group unrelated compounds; and `-NN` is a two-digit sequence number in natural filename order (01, 02, …). A `grinnell_21716_OBJ.tiff` master and its MMS-ID access image therefore become `grinnell_21716-01.jpg` and `grinnell_21716-02.tiff`: one obvious sequence per compound. Child rows are already in that order (D2). The child `identifier` still recovers each file's own PID from its pre-rename name (`gems.original_name`), and the parent still borrows the first web-friendly image child (D10). Oral-history pairs are renamed too; captions are recognized by their original names (D8). Single-file bibs keep their (meaningful or rebuilt) names unsequenced.
 
+- **D13. Partial (start/limit) processing is compound-atomic.** A start/limit range indexes whole manifest records, and one record is one Alma bib — whose parent row and all its child rows are produced together in a single mapping pass. So a compound can never be split by a batch boundary: **include a compound's record and its parent plus every child are processed; exclude the record and none of them are.** Batches that stop either side of a compound still merge into one correctly ordered CSV via `merge_batch_rows`. This is guaranteed by the manifest structure, and a regression test (`test_compound_stays_atomic_when_a_batch_boundary_reaches_it`) locks it in.
+
 ## Column decisions
 
 | Column | Source / rule | Rationale |
@@ -128,6 +130,7 @@ Add new entries at the top. Record the date, the column(s), what changed in the 
 
 | Date | Column(s) | Decision | Reason |
 | --- | --- | --- | --- |
+| 2026-10-02 | objectid, parentid | Partial start/limit processing is compound-atomic (D13). | A compound's parent and children are always processed together or not at all, so batches never detach children from parents. |
 | 2026-10-02 | original_file_name, identifier | Compound children are renumbered `<stem>-NN` on the record's own grinnell PID (D12); child identifiers come from the pre-rename name. | A DART folder scan read unrelated compounds' per-file PIDs as one 130+-part sequence; obvious per-compound sequences fix it. |
 | 2026-10-01 | original_file_name | Long numeric-only Alma filenames (MMS IDs, file PIDs) are rebuilt from a meaningful sibling stem, the grinnell PID, or the title (D11). | DART groups compounds by shared filename bases; MMS-ID names are meaningless and defeat grouping (GEMS_FILENAME_RULES.md). |
 | 2026-10-01 | objectid | Added the app's **ObjectID prefix** input field (D5); the typed slug overrides and is saved as the manifest's `objectid_prefix`. | Match a site slug when minting new IDs without editing the manifest by hand, as in DART. |

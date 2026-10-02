@@ -441,6 +441,57 @@ class PipelineTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Start record 5 exceeds 4 available record"):
                 process_records(records, out, field_map=field_map, start=5)
 
+    def test_compound_stays_atomic_when_a_batch_boundary_reaches_it(self):
+        # A start/limit range indexes whole bibs, so a compound (one bib, many files) is never split:
+        # include its record and the parent + all children appear; exclude it and none do.
+        field_map = {"columns": ["objectid", "parentid", "original_file_name", "title"], "rules": {
+            "objectid": {"from": "gems.objectid", "child": "inherit"},
+            "parentid": {"from": "gems.parentid", "child": "inherit"},
+            "original_file_name": {"from": "gems.filename", "child": "inherit"},
+            "title": {"from": "metadata.dc:title", "child": {"from": "gems.filename"}},
+        }}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+
+            def bib(mms_id, title, *names):
+                files = []
+                for name in names:
+                    path = tmp / f"{mms_id}-{name}"
+                    path.write_text(name, encoding="utf-8")
+                    files.append({"source": str(path), "filename": name})
+                return {"mms_id": mms_id, "metadata": {"dc:title": title}, "files": files}
+
+            records = [
+                bib("1", "Single A", "a.jpg"),
+                bib("2", "Compound B", "b1.jpg", "b2.jpg", "b3.jpg"),
+                bib("3", "Single C", "c.jpg"),
+            ]
+
+            def rows_for(start, limit, dest):
+                process_records(records, dest, field_map=field_map, start=start, limit=limit)
+                with (dest / "collection_metadata.csv").open(encoding="utf-8", newline="") as handle:
+                    return list(csv.DictReader(handle))
+
+            # The compound's record is in the batch: parent and all children appear, linked.
+            rows = rows_for(2, 1, tmp / "with")
+            parent = next(row for row in rows if row["title"] == "Compound B")
+            children = [row for row in rows if row["parentid"] == parent["objectid"]]
+            self.assertEqual(["b1-01.jpg", "b1-02.jpg", "b1-03.jpg"], [row["original_file_name"] for row in children])
+            self.assertEqual("_b1-01.jpg", parent["original_file_name"])
+
+            # The compound's record is excluded: no parent and no child rows for it.
+            rows = rows_for(1, 1, tmp / "without")
+            self.assertEqual(["Single A"], [row["title"] for row in rows])
+            self.assertFalse(any(row["parentid"] for row in rows))
+
+            # Batches either side of the compound still merge into one correctly ordered CSV.
+            merged = tmp / "merged"
+            process_records(records, merged, field_map=field_map, start=1, limit=2)
+            process_records(records, merged, field_map=field_map, start=3, limit=1)
+            with (merged / "collection_metadata.csv").open(encoding="utf-8", newline="") as handle:
+                titles = [row["title"] for row in csv.DictReader(handle)]
+            self.assertEqual(["Single A", "Compound B", "b1-01.jpg", "b1-02.jpg", "b1-03.jpg", "Single C"], titles)
+
     def test_expired_alma_links_are_refreshed_before_download(self):
         field_map = {"columns": ["objectid"], "rules": {"objectid": {"from": "gems.objectid"}}}
         record = {

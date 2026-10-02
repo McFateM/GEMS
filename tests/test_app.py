@@ -152,6 +152,34 @@ class AppTests(unittest.TestCase):
                 manifest = Path(save_settings.call_args.args[0]["source_path"])
                 self.assertFalse((manifest.parent / "collection_metadata.csv").exists())
 
+    def test_range_summary_reports_whole_compounds(self):
+        manifest_records = [
+            {"mms_id": "1", "files": [{"filename": "a.jpg"}]},
+            {"mms_id": "2", "files": [{"filename": "b1.jpg"}, {"filename": "b2.jpg"}]},
+            {"mms_id": "3", "files": [{"filename": "c1.jpg"}, {"filename": "c2.jpg"}, {"filename": "c3.jpg"}]},
+            {"mms_id": "4", "files": [{"filename": "d.jpg"}]},
+        ]
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("gems.app.LOG_PATH", Path(directory) / "gems.log"),
+            patch("gems.app.load_dotenv"),
+            patch("gems.app.load_settings", return_value={
+                "alma_mms_ids": "1, 2, 3, 4", "start_record": "2", "record_limit": "2",
+                "export_root_path": directory,
+            }),
+            patch("gems.app.save_settings"),
+            patch("gems.app.AlmaClient") as alma_client,
+        ):
+            alma_client.return_value.fetch_records.side_effect = lambda ids, **kwargs: [
+                dict(record) for record in manifest_records if record["mms_id"] in ids
+            ]
+            page = MagicMock()
+            main(page)
+            controls = page.add.call_args_list[0].args[0].content.controls
+            button(controls, "1)").on_click(None)
+            summary = next(c for c in controls if isinstance(c, ft.Text) and "included whole" in (c.value or ""))
+            self.assertEqual("Records 2–3 of 4 — 2 compounds included whole. Rows for records outside this range carry over from the existing CSV.", summary.value)
+
     def test_last_typed_selection_restores_even_without_retrieval(self):
         stored = {"alma_set_selection": "9715828820004641", "alma_set_id": "9715828820004641"}
         with (

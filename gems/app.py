@@ -138,6 +138,7 @@ def main(page: ft.Page) -> None:
         width=320,
     )
     status = ft.Text("Ready", expand=True)
+    range_summary = ft.Text("", size=12, color=ft.Colors.GREY_700)
     progress_bar = ft.ProgressBar(value=0, visible=False, expand=True)
     export_cancel_requested = threading.Event()
     export_thread: threading.Thread | None = None
@@ -200,6 +201,41 @@ def main(page: ft.Page) -> None:
                 "export_root_path": output_field.value or "",
             }
         )
+        refresh_range_summary()
+
+    def refresh_range_summary() -> None:
+        """Describe the current start/limit selection: which records, and that compounds stay whole."""
+        try:
+            if not source_field.value:
+                range_summary.value = ""
+                return
+            payload = json.loads(Path(source_field.value).read_text(encoding="utf-8"))
+            records = payload.get("records") if isinstance(payload, dict) else payload
+            if not isinstance(records, list):
+                range_summary.value = ""
+                return
+            records = [r for r in records if isinstance(r, dict)]
+            total = len(records)
+            start = int(start_field.value or "1")
+            limit = int(limit_field.value) if limit_field.value else None
+        except (OSError, ValueError, json.JSONDecodeError):
+            range_summary.value = ""
+            return
+        if total == 0:
+            range_summary.value = "Manifest has no records."
+            return
+        if start > total:
+            range_summary.value = f"Start record {start} exceeds {total} available record(s)."
+            return
+        last = total if limit is None else min(total, start - 1 + limit)
+        selected = records[start - 1 : last]
+        compounds = sum(1 for r in selected if isinstance(r.get("files"), list) and len(r["files"]) > 1)
+        note = f" — {compounds} compound{'s' if compounds != 1 else ''} included whole" if compounds else ""
+        partial = limit is not None and (start > 1 or last < total)
+        scope = f"Records {start}–{last} of {total}" if partial else f"All {total} records"
+        range_summary.value = f"{scope}{note}."
+        if partial:
+            range_summary.value += " Rows for records outside this range carry over from the existing CSV."
 
     def on_source_pick(event: ft.FilePickerResultEvent) -> None:
         if event.files:
@@ -279,6 +315,7 @@ def main(page: ft.Page) -> None:
             )
             source_field.value = str(manifest_path)
             update_settings()
+            refresh_range_summary()
             report(f"Saved {len(alma_records)} Alma record(s) to {run_dir}. Ready to map and export.{note}", success=True)
             return True
         except Exception as exc:  # pragma: no cover - UI feedback wrapper
@@ -566,6 +603,7 @@ def main(page: ft.Page) -> None:
                         ]
                     ),
                     ft.Row([start_field, limit_field, prefix_field]),
+                    range_summary,
                     progress_bar,
                     ft.Row(
                         [
@@ -596,6 +634,7 @@ def main(page: ft.Page) -> None:
             bgcolor=ft.Colors.GREY_100,
         )
     )
+    refresh_range_summary()
 
 
 def launch() -> None:
