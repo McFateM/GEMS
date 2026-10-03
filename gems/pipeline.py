@@ -7,12 +7,14 @@ import mimetypes
 import re
 import shutil
 import time
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from functools import cache
 from hashlib import sha256
+from itertools import chain
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Any
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, unquote, urlparse
 from urllib.request import urlretrieve
@@ -471,20 +473,6 @@ def maintained_key(record: dict[str, Any], fallback: str) -> str:
     return key if is_valid_key(key) else fallback
 
 
-# DART's image extensions minus tif/tiff: web-friendly access images, not preservation masters.
-PARENT_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
-
-
-def parent_borrowed_name(items: list[dict[str, str]]) -> str:
-    """The filename a compound parent borrows for its `_`-prefixed original_file_name (D10):
-    the first child with a web-friendly image name — never a TIFF master, so the derivative DART
-    copies onto the parent comes from the access image — or simply the first child otherwise."""
-    for item in items:
-        if Path(item["filename"]).suffix.lower() in PARENT_IMAGE_EXTS:
-            return item["filename"]
-    return items[0]["filename"]
-
-
 def map_to_template(
     records: list[dict[str, Any]],
     template_map: dict[str, Any],
@@ -502,27 +490,34 @@ def map_to_template(
     objects_dir.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, str]] = []
     count = 0
-    total_files = sum(len(representation_items(record)) for record in records)
+    record_items = [representation_items(record) for record in records]
+    total_files = sum(len(items) for items in record_items)
     done = 0
     if progress is not None:
         progress("Mapping", 0, max(total_files, 1))
-    for record_index, record in enumerate(records, start=1):
+    for record_index, (record, items) in enumerate(zip(records, record_items), start=1):
         if is_cancelled is not None and is_cancelled():
             raise ExportCancelled()
         metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
         record_id = str(record["objectid"])
         mods = legacy_mods_loader(metadata, legacy_mods_dir)
-        items = representation_items(record)
+        # DART creates exactly one compound parent per folder, so each compound's children go
+        # into their own subfolder named for the compound stem (one intellectual object per folder);
+        # single-file records stay flat in objects/.
+        compound = len(items) > 1
+        stem = compound_stem_for_items(items)
+        subdir = objects_dir / stem if compound and stem else objects_dir
         for item in items:
             if is_cancelled is not None and is_cancelled():
                 raise ExportCancelled()
-            destination = objects_dir / item["filename"]
+            destination = subdir / item["filename"]
             if progress is not None:
                 progress(item["filename"], done, max(total_files, 1))
             if not destination.exists():
                 source = item["source"]
                 if refresh_source is not None and link_expired(source):
                     source = refresh_source(record, item)
+                subdir.mkdir(parents=True, exist_ok=True)
                 fetch_object(source, destination)
             done += 1
             count += 1
@@ -531,7 +526,7 @@ def map_to_template(
         if (
             len(media) == 1 and transcripts and len(media) + len(transcripts) == len(items)
             # Oral history: one transcript item plays the media and reads its timed text from transcripts/<objectid>.csv.
-            and write_transcript_csv(objects_dir / transcripts[0]["filename"], transcript_csv_path(objects_dir, media[0]["filename"]))
+            and write_transcript_csv(subdir / transcripts[0]["filename"], transcript_csv_path(objects_dir, media[0]["filename"]))
         ):
             parent = file_context(media[0])
             parent.update(
@@ -546,8 +541,9 @@ def map_to_template(
             parent = {
                 "display_template": "compound_object",
                 # DART matches every CSV row by original_file_name; a compound parent has no
-                # file of its own in Alma, so it borrows a child's name with a "_" prefix.
-                "filename": f"_{parent_borrowed_name(items)}",
+                # file of its own in Alma, so it borrows the first child's name with a "_" prefix,
+                # matching the parent DART generates for the folder (first child, numbered first).
+                "filename": f"_{items[0]['filename']}",
                 "filenames": "; ".join(item["filename"] for item in items),
                 "dcmi_type": child_types.pop() if len(child_types) == 1 else "",
             }
@@ -614,10 +610,11 @@ def representation_items(record: dict[str, Any]) -> list[dict[str, str]]:
     # numeric-only Alma name (an MMS ID or file PID, e.g. 991011591179304641.jpg) is rebuilt from
     # record context before any clash resolution sees it.
     anchor = meaningful_anchor(record, [name for _, _, _, name in candidates])
-    # And every compound's children are renumbered as a `<stem>-NN` sequence (D12): natural order,
+    # Every compound's children are renumbered as a `<stem>-NN` sequence (D12): natural order,
     # unique trailing numbers, so a DART folder scan sees one obvious sequence per compound instead
     # of one giant sequence across unrelated compounds sharing the collection's naming scheme.
     sequenced: dict[int, str] = {}
+    stem = ""
     if len(candidates) > 1:
         stem = compound_stem(record, [name for _, _, _, name in candidates], anchor)
         in_order = sorted(candidates, key=lambda candidate: [
@@ -639,32 +636,86 @@ def representation_items(record: dict[str, Any]) -> list[dict[str, str]]:
             **{key: value for key, value in detail.items() if key != "stored_name"},
             "filename": overrides.get(detail.get("file_pid") or file_info["source"]) or safe_filename(name, index),
         })
-    return sorted(items, key=lambda item: [
+    items = sorted(items, key=lambda item: [
         int(token) if token.isdigit() else token.lower() for token in re.split(r"(\d+)", item["filename"])
     ])
+    # The compound's folder stem is the record's natural compound stem, fixed before any clash-rename:
+    # a renamed child still belongs to its compound's folder, not the objects/ root.
+    for item in items:
+        item["compound_stem"] = stem
+    return items
+
+
+COMPOUND_SEQUENCE = re.compile(r"^(.+)-\d+$")
+
+
+def compound_stem_from_name(filename: str) -> str:
+    """A `<stem>-NN` compound child name's stem, else empty (singles and non-sequenced names)."""
+    match = COMPOUND_SEQUENCE.match(Path(filename).stem)
+    return match.group(1) if match else ""
+
+
+def compound_stem_for_items(items: list[dict[str, str]]) -> str:
+    """The record's compound folder stem: the precomputed value, else the stem most children share.
+
+    A clash-rename can break one child's `<stem>-NN` pattern; the folder still follows the record's
+    dominant stem so that child stays with its compound instead of dropping to the objects/ root.
+    """
+    if items and "compound_stem" in items[0]:
+        return items[0]["compound_stem"]
+    stems = [stem for stem in (compound_stem_from_name(item["filename"]) for item in items) if stem]
+    return max(stems, key=stems.count) if stems else ""
+
+
+def disk_filename(item: dict[str, str], stem: str, compound: bool) -> str:
+    """The file's location under objects/: <stem>/<filename> for a compound child, else <filename>.
+
+    `compound` (the record has several files) decides, not whether the name still matches `<stem>-NN`:
+    a clash-rename can break that pattern, but the child still belongs to its compound's folder."""
+    return f"{stem}/{item['filename']}" if compound and stem else item["filename"]
+
+
+def iter_disk_filenames(items: list[dict[str, str]], stem: str) -> Iterator[str]:
+    """Every item's on-disk path relative to objects/."""
+    compound = len(items) > 1
+    return (disk_filename(item, stem, compound) for item in items)
+
+
+def iter_all_filenames(items: list[dict[str, str]], stem: str) -> Iterator[str]:
+    """On-disk paths plus the bare compound child filenames a CSV reports and DART matches on."""
+    compound = len(items) > 1
+    return chain(
+        (disk_filename(item, stem, compound) for item in items),
+        (item["filename"] for item in items if compound),
+    )
 
 
 def resolve_filename_clashes(records: list[dict[str, Any]]) -> list[str]:
     """Rename later files that share a name with an earlier, different file; returns the new names.
 
     The first file in manifest order keeps its name; others get their Alma file ID appended, recorded in the
-    record's `gems_filenames` so names stay stable across batches.
+    record's `gems_filenames` so names stay stable across batches. Clashes are judged per on-disk folder:
+    a compound child only collides with names in its own <stem>/ folder, singles with the objects/ root.
     """
     owners: dict[str, str] = {}
     renamed: list[str] = []
     for record in records:
-        for item in representation_items(record):
+        items = representation_items(record)
+        compound = len(items) > 1
+        stem = compound_stem_for_items(items)
+        for item in items:
             key = item.get("file_pid") or item["source"]
-            if owners.setdefault(item["filename"], key) == key:
+            location = disk_filename(item, stem, compound)
+            if owners.setdefault(location, key) == key:
                 continue
-            stem, dot, extension = item["filename"].rpartition(".")
+            name, dot, extension = item["filename"].rpartition(".")
             suffix = item.get("file_pid") or sha256(item["source"].encode("utf-8")).hexdigest()[:12]
-            new_name = f"{stem}_{suffix}.{extension}" if dot else f"{item['filename']}_{suffix}"
+            new_name = f"{name}_{suffix}.{extension}" if dot else f"{item['filename']}_{suffix}"
             overrides = record.get("gems_filenames")
             if not isinstance(overrides, dict):
                 overrides = record["gems_filenames"] = {}
             overrides[key] = new_name
-            owners[new_name] = key
+            owners[disk_filename({**item, "filename": new_name}, stem, compound)] = key
             renamed.append(new_name)
     return renamed
 
@@ -673,9 +724,13 @@ def check_unique_filenames(records: list[dict[str, Any]]) -> None:
     owners: dict[str, str] = {}
     clashes: set[str] = set()
     for record in records:
-        for item in representation_items(record):
-            if owners.setdefault(item["filename"], item["source"]) != item["source"]:
-                clashes.add(item["filename"])
+        items = representation_items(record)
+        compound = len(items) > 1
+        stem = compound_stem_for_items(items)
+        for item in items:
+            location = disk_filename(item, stem, compound)
+            if owners.setdefault(location, item["source"]) != item["source"]:
+                clashes.add(location)
     if clashes:
         shown = ", ".join(sorted(clashes)[:5])
         raise ValueError(f"Different files would be saved under the same name ({shown}); nothing was mapped.")

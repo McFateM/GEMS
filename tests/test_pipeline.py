@@ -147,8 +147,8 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(("grinnell:10", "http://hdl.handle.net/11084/10"), (parent["identifier"], parent["Item Permalink"]))
             self.assertEqual(("Public Domain", "http://rightsstatements.org/vocab/NoC-US/1.0/"), (parent["rights"], parent["Standardized Rights"]))
             self.assertEqual("", parent["image_thumb"])
-            # DART conventions: children are a `<stem>-NN` sequence on the record's own grinnell PID
-            # (D12), and the compound parent's original_file_name is "_" + the first child's name.
+            # The compound parent's original_file_name is "_" + the first sequenced child (DART's
+            # folder-scan convention: first child, numbered first).
             self.assertEqual("_grinnell_12-01.jpg", parent["original_file_name"])
             self.assertEqual("grinnell_12-01.jpg; grinnell_12-02.jpg", parent["Filename"])
             self.assertEqual((parent["objectid"], "image"), (first["parentid"], first["display_template"]))
@@ -164,8 +164,11 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual("_" + rec["objectid"], rec["original_file_name"])
             self.assertEqual("Finding aid only", rec["title"])
             self.assertTrue((tmp / "out" / "objects" / "grinnell_5_OBJ.pdf").exists())
+            # Compound children live in their own per-stem subfolder (one object per folder for DART).
+            self.assertTrue((tmp / "out" / "objects" / "grinnell_12" / "grinnell_12-01.jpg").exists())
+            self.assertTrue((tmp / "out" / "objects" / "grinnell_12" / "grinnell_12-02.jpg").exists())
 
-    def test_compound_parent_borrows_a_web_friendly_child_name(self):
+    def test_compound_parent_borrows_the_first_sequenced_child_name(self):
         field_map = {"columns": ["objectid", "parentid", "display_template", "original_file_name"], "rules": {
             "objectid": {"from": "gems.objectid", "child": "inherit"},
             "parentid": {"from": "gems.parentid", "child": "inherit"},
@@ -197,7 +200,8 @@ class PipelineTests(unittest.TestCase):
             with result.csv_path.open(encoding="utf-8", newline="") as handle:
                 rows = list(csv.DictReader(handle))
             parents = [row for row in rows if row["display_template"] == "compound_object"]
-            self.assertEqual(["_2001_scan-02.jpg", "_grinnell_12-01.tiff", "_doc1-01.pdf"],
+            # Each parent borrows its first sequenced child (numbered first), matching the folder scan.
+            self.assertEqual(["_2001_scan-01.tiff", "_grinnell_12-01.tiff", "_doc1-01.pdf"],
                              [row["original_file_name"] for row in parents])
             # Children are renumbered in natural filename order (the TIFF is still 991's first child).
             children = [row["original_file_name"] for row in rows if row["parentid"]]
@@ -250,11 +254,13 @@ class PipelineTests(unittest.TestCase):
                               "grinnell_109-01.jpg", "grinnell_109-02.tiff",
                               "horses-and-wagon-in-grinnell-01.jpg", "horses-and-wagon-in-grinnell-02.jpg"],
                              children)
-            # Parents borrow a meaningful, web-friendly child name (never the TIFF master).
+            # Parents borrow the first sequenced child (here each pair's first child is a JPG).
             self.assertEqual(["_grinnell_21716-01.jpg", "_grinnell_109-01.jpg", "_horses-and-wagon-in-grinnell-01.jpg"],
                              [row["original_file_name"] for row in parents])
-            # The files on disk carry exactly the names the CSV reports.
-            self.assertEqual(set(children), {path.name for path in (tmp / "out" / "objects").iterdir()})
+            # The files on disk carry exactly the names the CSV reports, one compound per subfolder.
+            on_disk = {path.name for path in (tmp / "out" / "objects").rglob("*") if path.is_file()}
+            self.assertEqual(set(children), on_disk)
+            self.assertTrue((tmp / "out" / "objects" / "grinnell_21716" / "grinnell_21716-01.jpg").exists())
             # Short numeric stems are sequence numbers, not MMS IDs, so they are left alone.
             self.assertFalse(is_meaningless_name("991.jpg"))
             self.assertTrue(is_meaningless_name("991011591179304641.jpg"))
@@ -292,14 +298,16 @@ class PipelineTests(unittest.TestCase):
                     process_records(records, tmp / "out", field_map=field_map,
                                     progress=progress, is_cancelled=is_cancelled)
             # The first file completed; the run stopped before the rest.
-            self.assertEqual(["scan-1-01.jpg"], [path.name for path in (tmp / "out" / "objects").iterdir()])
+            first_run = [path for path in (tmp / "out" / "objects").rglob("*") if path.is_file()]
+            self.assertEqual(["scan-1-01.jpg"], [path.name for path in first_run])
+            self.assertEqual(["scan-1"], [path.parent.name for path in first_run])
             self.assertTrue(progress_calls)
             self.assertEqual(3, progress_calls[0][2])
 
             # Re-running resumes: the finished file is skipped, the rest are fetched.
             result = process_records(records, tmp / "out", field_map=field_map)
             self.assertEqual(3, result.file_count)
-            self.assertEqual(3, len(list((tmp / "out" / "objects").iterdir())))
+            self.assertEqual(3, len([path for path in (tmp / "out" / "objects").rglob("*") if path.is_file()]))
 
     def test_template_objectids_are_persisted_and_unique_across_batches(self):
         field_map = {"columns": ["objectid", "parentid"], "rules": {
@@ -541,16 +549,16 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(4, result.file_count)
             self.assertEqual(
                 ["grinnell_1-01.vtt", "grinnell_1-02.mp3", "grinnell_2-01.vtt", "grinnell_2-02.mp3"],
-                sorted(path.name for path in (tmp / "out" / "objects").iterdir()),
+                sorted(path.name for path in (tmp / "out" / "objects").rglob("*") if path.is_file()),
             )
-            self.assertEqual("captions 2", (tmp / "out" / "objects" / "grinnell_2-01.vtt").read_text(encoding="utf-8"))
+            self.assertEqual("captions 2", (tmp / "out" / "objects" / "grinnell_2" / "grinnell_2-01.vtt").read_text(encoding="utf-8"))
             self.assertEqual("v2", representation_items(records[1])[0]["file_pid"])
 
             records[1]["representations"][0]["files"]["representation_file"][0]["path"] = "store/z/grinnell_1_MEDIATRACK.vtt"
             result = process_records(records, tmp / "out2", field_map=field_map)
             self.assertEqual(["grinnell_1-01_v2.vtt", "grinnell_1-02_m2.mp3"], result.renamed_files)
-            self.assertEqual("captions 2", (tmp / "out2" / "objects" / "grinnell_1-01_v2.vtt").read_text(encoding="utf-8"))
-            self.assertEqual("captions 1", (tmp / "out2" / "objects" / "grinnell_1-01.vtt").read_text(encoding="utf-8"))
+            self.assertEqual("captions 2", (tmp / "out2" / "objects" / "grinnell_1" / "grinnell_1-01_v2.vtt").read_text(encoding="utf-8"))
+            self.assertEqual("captions 1", (tmp / "out2" / "objects" / "grinnell_1" / "grinnell_1-01.vtt").read_text(encoding="utf-8"))
 
     def test_same_named_files_are_renamed_once_and_kept_stable_in_the_manifest(self):
         field_map = {"columns": ["objectid", "parentid", "original_file_name"], "rules": {
@@ -588,9 +596,9 @@ class PipelineTests(unittest.TestCase):
             # No clash: 992's children are sequenced to grinnell_7-01/02, leaving grinnell_7_high.jpg free.
             self.assertEqual([], result.renamed_files)
             objects = group / "objects"
-            self.assertEqual(("front", "back"), ((objects / "991-01.jpg").read_text(), (objects / "991-02.jpg").read_text()))
+            self.assertEqual(("front", "back"), ((objects / "991" / "991-01.jpg").read_text(), (objects / "991" / "991-02.jpg").read_text()))
             self.assertEqual("photo", (objects / "grinnell_7_high.jpg").read_text())
-            self.assertEqual("photo", (objects / "grinnell_7-01.jpg").read_text())
+            self.assertEqual("photo", (objects / "grinnell_7" / "grinnell_7-01.jpg").read_text())
             saved = json.loads(manifest.read_text(encoding="utf-8"))["records"]
             self.assertNotIn("gems_filenames", saved[2])
             with result.csv_path.open(encoding="utf-8", newline="") as handle:
