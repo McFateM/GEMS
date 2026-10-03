@@ -490,6 +490,7 @@ def map_to_template(
     objects_dir.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, str]] = []
     count = 0
+    claimed_folders: dict[str, str] = {}
     record_items = [representation_items(record) for record in records]
     total_files = sum(len(items) for items in record_items)
     done = 0
@@ -501,12 +502,11 @@ def map_to_template(
         metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
         record_id = str(record["objectid"])
         mods = legacy_mods_loader(metadata, legacy_mods_dir)
-        # DART creates exactly one compound parent per folder, so each compound's children go
-        # into their own subfolder named for the compound stem (one intellectual object per folder);
-        # single-file records stay flat in objects/.
-        compound = len(items) > 1
-        stem = compound_stem_for_items(items)
-        subdir = objects_dir / stem if compound and stem else objects_dir
+        # DART creates exactly one compound parent per folder, so every record's files go into
+        # their own subfolder (one intellectual object per folder): a compound under its stem, a
+        # single under its file's own stem. Unrelated records that share a filename base
+        # (grinnell-310.pdf next to grinnell-1135.pdf) can then never be grouped by a DART scan.
+        subdir = objects_dir / record_folder(record, items, claimed_folders) if items else objects_dir
         for item in items:
             if is_cancelled is not None and is_cancelled():
                 raise ExportCancelled()
@@ -667,8 +667,26 @@ def compound_stem_for_items(items: list[dict[str, str]]) -> str:
     return max(stems, key=stems.count) if stems else ""
 
 
+def record_folder(record: dict[str, Any], items: list[dict[str, str]], claimed: dict[str, str]) -> str:
+    """The record's one subfolder under objects/: one intellectual object per folder, so a DART
+    folder scan can only ever group a record's own files. A compound keeps its compound stem
+    (objectid if somehow stemless); a single uses its file's stem, or the record's objectid when
+    another record already claimed that folder name."""
+    record_id = str(record.get("objectid") or "")
+    if len(items) > 1:
+        folder = compound_stem_for_items(items) or record_id
+        claimed.setdefault(folder, record_id)
+        return folder
+    stem = Path(items[0]["filename"]).stem
+    if claimed.setdefault(stem, record_id) == record_id:
+        return stem
+    return record_id
+
+
 def disk_filename(item: dict[str, str], stem: str, compound: bool) -> str:
-    """The file's location under objects/: <stem>/<filename> for a compound child, else <filename>.
+    """The scope a file's name clashes in: <stem>/<filename> for a compound child, else the bare
+    <filename>. Singles are written to their own per-record folders (record_folder), but the CSV
+    reports bare filenames and DART matches on them, so two singles sharing a name still clash.
 
     `compound` (the record has several files) decides, not whether the name still matches `<stem>-NN`:
     a clash-rename can break that pattern, but the child still belongs to its compound's folder."""
@@ -694,8 +712,9 @@ def resolve_filename_clashes(records: list[dict[str, Any]]) -> list[str]:
     """Rename later files that share a name with an earlier, different file; returns the new names.
 
     The first file in manifest order keeps its name; others get their Alma file ID appended, recorded in the
-    record's `gems_filenames` so names stay stable across batches. Clashes are judged per on-disk folder:
-    a compound child only collides with names in its own <stem>/ folder, singles with the objects/ root.
+    record's `gems_filenames` so names stay stable across batches. Clashes are judged per CSV-visible name:
+    a compound child only collides with names in its own <stem>/ folder; singles each get their own folder
+    on disk but report bare filenames to DART, so singles still clash with one another by bare name.
     """
     owners: dict[str, str] = {}
     renamed: list[str] = []

@@ -83,24 +83,24 @@ Additional requirements:
 
 ---
 
-## On-Disk Layout: One Folder per Compound (GEMS Migration)
+## On-Disk Layout: One Folder per Record (GEMS Migration)
 
-DART creates **exactly one untitled compound parent per folder** and, as of v6.1, scans the Inputs Folder **recursively**. So GEMS writes each compound's children into their own subfolder named for the compound stem, while single-file records stay flat at the `objects/` root:
+DART creates **exactly one untitled compound parent per folder** and, as of v6.1, scans the Inputs Folder **recursively**. So GEMS writes **every record's files into their own subfolder** — a compound under its compound stem, a single-file record under its file's own stem:
 
 ```
 objects/grinnell_10171/grinnell_10171-01.tiff
 objects/grinnell_10171/grinnell_10171-02.tiff
 objects/grinnell_10186/grinnell_10186-01.tiff
 objects/grinnell_10186/grinnell_10186-05.jpg
-objects/grinnell_103_OBJ.pdf          ← single-file bib, stays at the root
+objects/grinnell_103_OBJ/grinnell_103_OBJ.pdf   ← single-file bib gets its own folder
 ```
 
-Each subfolder yields exactly one DART compound whose parent row is `_` + its first sequenced child (e.g., `_grinnell_10171-01.tiff`). GEMS's parent rows borrow that same first-sequenced-child name, so they merge onto the rows DART generates.
+A folder holding one file can never group, so unrelated singles that share a filename base (`grinnell-310.pdf`, `grinnell-1135.pdf`, `grinnell_214_OBJ.pdf`, …) stay standalone in DART instead of collapsing into one giant compound. Each compound subfolder still yields exactly one DART compound whose parent row is `_` + its first sequenced child (e.g., `_grinnell_10171-01.tiff`). GEMS's parent rows borrow that same first-sequenced-child name, so they merge onto the rows DART generates.
 
 Two consequences:
 
 - **Compound parent name = first sequenced child.** DART names a folder's compound parent after the first child in numbered-first-then-alphabetical order — *not* a "preferred access image". GEMS matches this exactly; it no longer substitutes a web-friendly (`.jpg`) child for a `.tiff` master.
-- **Point DART at a fresh working folder.** `file_to_id_map` keys child IDs by full file path, and compound IDs by folder path. Moving an existing flat export into subfolders changes every path, so reusing a working folder built on the old flat layout leaves stale mappings; start a new one. A flat export can be reorganized after the fact with DART's `scripts/organize_compound_folders.py`.
+- **Point DART at a fresh working folder.** `file_to_id_map` keys child IDs by full file path, and compound IDs by folder path. Moving an existing flat export into subfolders changes every path, so reusing a working folder built on the old flat layout leaves stale mappings; start a new one. Prefer re-exporting with current GEMS; a legacy flat export of **compounds only** can alternatively be reorganized after the fact with DART's `scripts/organize_compound_folders.py` — it groups by shared filename base, so it cannot separate individual exports that share one (`grinnell-310.pdf`, `grinnell-1135.pdf`, … would be herded into one folder and still mis-group).
 
 ---
 

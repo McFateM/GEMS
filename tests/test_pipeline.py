@@ -163,7 +163,9 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(("", "record"), (rec["parentid"], rec["display_template"]))
             self.assertEqual("_" + rec["objectid"], rec["original_file_name"])
             self.assertEqual("Finding aid only", rec["title"])
-            self.assertTrue((tmp / "out" / "objects" / "grinnell_5_OBJ.pdf").exists())
+            # Singles get their own folder too (one object per folder), so unrelated records
+            # sharing a filename base can never be grouped by a DART folder scan.
+            self.assertTrue((tmp / "out" / "objects" / "grinnell_5_OBJ" / "grinnell_5_OBJ.pdf").exists())
             # Compound children live in their own per-stem subfolder (one object per folder for DART).
             self.assertTrue((tmp / "out" / "objects" / "grinnell_12" / "grinnell_12-01.jpg").exists())
             self.assertTrue((tmp / "out" / "objects" / "grinnell_12" / "grinnell_12-02.jpg").exists())
@@ -597,7 +599,8 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual([], result.renamed_files)
             objects = group / "objects"
             self.assertEqual(("front", "back"), ((objects / "991" / "991-01.jpg").read_text(), (objects / "991" / "991-02.jpg").read_text()))
-            self.assertEqual("photo", (objects / "grinnell_7_high.jpg").read_text())
+            # The single lives in its own folder named for its file's stem (one object per folder).
+            self.assertEqual("photo", (objects / "grinnell_7_high" / "grinnell_7_high.jpg").read_text())
             self.assertEqual("photo", (objects / "grinnell_7" / "grinnell_7-01.jpg").read_text())
             saved = json.loads(manifest.read_text(encoding="utf-8"))["records"]
             self.assertNotIn("gems_filenames", saved[2])
@@ -673,9 +676,10 @@ class PipelineTests(unittest.TestCase):
             out = Path(tmpdir) / "out"
             with self.assertRaisesRegex(ValueError, "scan.jpg expired .* Retrieve the records again"):
                 process_records(records, out, field_map=field_map)
-            self.assertFalse((out / "objects" / "scan.jpg.part").exists())
+            self.assertFalse((out / "objects" / "scan" / "scan.jpg.part").exists())
 
-            (out / "objects" / "scan.jpg").write_text("already here", encoding="utf-8")
+            # The failed run created the single's per-record folder before fetching.
+            (out / "objects" / "scan" / "scan.jpg").write_text("already here", encoding="utf-8")
             download.reset_mock()
             result = process_records(records, out, field_map=field_map)
             download.assert_not_called()
