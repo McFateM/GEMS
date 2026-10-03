@@ -2,6 +2,10 @@
 
 GEMS: Gather, Export, Map, Serialize.
 
+> Running GEMS/DART on a remote Windows workstation inside the campus network?
+> See [REMOTE_WINDOWS.md](REMOTE_WINDOWS.md) for the RDP connection guide and
+> the one-command Windows bootstrap script.
+
 This repository now contains a small Flet-based application and headless pipeline for:
 - loading Alma Digital / Specto exports from JSON or CSV,
 - extracting digital-object identifiers, files, and structured metadata,
