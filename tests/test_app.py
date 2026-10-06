@@ -361,8 +361,8 @@ class AppTests(unittest.TestCase):
             with (run_dir / "collection_metadata.csv").open(encoding="utf-8", newline="") as handle:
                 reader = csv.DictReader(handle)
                 row = next(reader)
-            self.assertEqual("key", reader.fieldnames[0])
-            self.assertRegex(row["key"], r"^dg_\d+$")
+            self.assertEqual("identifier", reader.fieldnames[0])
+            self.assertNotIn("key", reader.fieldnames)
             self.assertTrue((run_dir / "normalized_records.json").exists())
             self.assertEqual("scan data", (run_dir / "objects" / "scan.txt").read_text(encoding="utf-8"))
             log_text = (run_dir / "gems.log").read_text(encoding="utf-8")

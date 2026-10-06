@@ -417,7 +417,6 @@ def main(page: ft.Page) -> None:
                     objectid_prefix=(prefix_field.value or "").strip() or None,
                     progress=on_progress,
                     is_cancelled=export_cancel_requested.is_set,
-                    page=page,
                 )
                 update_settings()
                 for name in result.renamed_files:

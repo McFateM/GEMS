@@ -67,7 +67,7 @@ The minimal JSON shape is:
 ./run.sh
 ```
 
-The launch script creates `.venv`, installs everything in `python_requirements.txt` (including the local [common-DG-utilities](https://github.com/McFateM/common-DG-utilities) package, expected as a sibling checkout at `../common-DG-utilities`), and starts GEMS. To run with an existing environment, use `python -m gems`.
+The launch script creates `.venv`, installs everything in `python_requirements.txt`, and starts GEMS. To run with an existing environment, use `python -m gems`.
 
 The status strip at the bottom shows progress, results, and errors for retrieval and export. Use its copy button to copy the current status message. Its activity-log button reads the current run's `gems.log` after a manifest is saved; startup and pre-run messages remain in `~/.GEMS-data/logfiles/gems.log`.
 
@@ -96,4 +96,4 @@ The export writes:
 - `/path/to/output/normalized_records.json`
 - `/path/to/output/objects/*`
 
-Every `collection_metadata.csv` row carries a first `key` column maintained under the shared [common-DG-utilities](https://github.com/McFateM/common-DG-utilities) rules: an existing valid `key` (`dg_<epoch>` or `<slug>_dg_<epoch>`) is kept, a `dg_<epoch>` fragment embedded in any field or filename is adopted, and any other row mints a new unique key. Rows built from a template map key on the row's `objectid`; CSVs written before this column existed still merge and gain keys on the next export. The `transcripts/<objectid>.csv` timed-text files keep their fixed `timestamp,speaker,words` shape.
+The `transcripts/<objectid>.csv` timed-text files keep their fixed `timestamp,speaker,words` shape.
