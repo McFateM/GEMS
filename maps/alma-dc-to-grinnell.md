@@ -34,10 +34,10 @@ Each entry in `rules` is keyed by an output column. Columns without a rule are l
 
 - **D1. One row per Alma bib; compound objects for multi-file bibs.** A bib with one file is one row. A bib with several files becomes a parent row (`display_template` = `compound_object`, no file of its own) plus one child row per file with `parentid` set to the parent's `objectid`. The parent's `original_file_name` is `_` + a borrowed child filename (D10 picks which), per DART's convention. This follows CollectionBuilder's compound-object conventions (`docs/compound_objects.md`). `compound_object` was chosen over `multiple` because Alma representations carry individual labels.
 - **D2. Children are sorted by natural filename order** (`grinnell_10379…` before `grinnell_10380…`), and numbered in that order (D12). Alma returns representations in no useful order. The legacy order is in `tableOfContents`/`dginfo`, but it doesn't match the Alma files one-to-one (25 titles vs. 10 files).
-- **D3. Children carry only row-specific metadata.** Following CollectionBuilder guidance, child rows get only the control fields, title, type, format, identifier, filename, rights, and Contributing Institution. Everything descriptive lives on the parent.
+- **D3. Children carry only row-specific metadata.** Following CollectionBuilder guidance, child rows get only the control fields, title, type, format, identifier, filename, rights, and contributing_institution. Everything descriptive lives on the parent.
 - **D4. `display_template` comes from the file's MIME type**: image → `image`, PDF → `pdf`, audio → `audio`, video → `video`, otherwise `record`. A bib with no files is `record`.
 - **D8. Oral histories become one `transcript` item.** This applies to a bib whose files are exactly one audio or video file plus caption/transcript files (`*.vtt`, or `*TRANSCRIPT*.xml` in the legacy cue format), as in PHPP Oral Histories.
-  - It becomes a single row with `display_template` = `transcript`, not a compound object. `original_file_name`, `format` and `type` describe the media file, and `Filename` lists all the files.
+  - It becomes a single row with `display_template` = `transcript`, not a compound object. `original_file_name`, `format` and `type` describe the media file, and `filename` lists all the files.
   - The caption file is converted to `transcripts/<media-stem>.csv` (`timestamp,speaker,words`) next to `collection_metadata.csv`, where `<media-stem>` is the media file's name without its extension — e.g. `grinnell_1-02.csv` for `grinnell_1-02.mp3` (files are renamed per D12, and captions are still recognized by their original Alma names). The site's `transcript` layout reads `_data/transcripts/<media-stem>.csv`, so copy the folder into the collection's `_data/`.
   - The legacy `oh_speaker` markup is split into one row per speaker turn. Short labels ("Judy") are expanded to the full names in single-speaker cues ("Judy Hunter").
   - The original caption files stay in `objects/`. If conversion fails, the bib falls back to D1.
@@ -74,41 +74,43 @@ Each entry in `rules` is keyed by an output column. Columns without a rule are l
 | object_location, image_small, image_thumb | — | Filled by DART (D6). |
 | image_alt_text, thumb_focus | — | CollectionBuilder falls back to description/title for alt text. |
 | title | `dc:title`, else `dcterms:title`; children: representation label, else filename | Representation labels are the legacy child titles. |
+| title_alternative | `dcterms:alternative` | De-duplicated, semicolon-separated values; main/parent rows only. |
 | creator_personal / creator_org | `dc:creator` + `dcterms:creator` (combined), split by a personal-name regex; fallback: MODS personal / corporate creators | DC doesn't distinguish persons from organizations. Values shaped like LC personal names (`Surname, Forename…`, optional second surname word) are treated as persons; everything else as organizations. Multi-word surnames beyond two words (e.g. `Van Der Berg, …`) will be misfiled as organizations. MODS only when Alma has no creator at all (D7). |
 | interviewee, interviewer | — | No source element. |
 | date | `dcterms:created`, else `dc:date`, else `dcterms:date` | The column is "Date Created", and `dcterms:created` is a clean year. |
-| Time Period | `dcterms:temporal` | e.g. `Eighteen fifties`. |
+| time_period | `dcterms:temporal` | e.g. `Eighteen fifties`. |
 | description | `dcterms:abstract`, else `dc:description`/`dcterms:description` (not split) | |
-| Subject (Topic) / Subject (Person) | `dcterms:subject (dcterms:LCSH)` + untyped `dcterms:subject` (combined), split by the same personal-name regex | e.g. `Brown, John, 1800-1859` → Person. `dc:subject` is deliberately excluded: in this collection it holds legacy alternate titles (identical to `oldalttitle`), not subjects. |
-| Subject (Organization) | — | Can't be reliably separated from topics in DC (Q4). |
+| keywords | Unqualified `dc:subject` (no `xsi:type`) | Preserve all values as de-duplicated, semicolon-separated keywords, including legacy alternate-title values. Typed `dc:subject` keys are not selected. |
+| subject_topic / subject_person | `dcterms:subject (dcterms:LCSH)` + untyped `dcterms:subject` (combined), split by the same personal-name regex | e.g. `Brown, John, 1800-1859` → Person. `dc:subject` is kept separately in `keywords`. |
+| subject_organization | — | Can't be reliably separated from topics in DC (Q4). |
 | contributor_personal / contributor_org | `dc:contributor` + `dcterms:contributor` (combined), personal-name regex; fallback: MODS personal / corporate contributors | Same approach as creator. |
 | location | `dcterms:spatial` | |
 | latitude, longitude | — | No source element. |
 | lanugage | `dc:language` + `dcterms:language` (combined) | The column name keeps the template's spelling (`lanugage`) so it matches the site's CSV. |
-| source, provenance, Call Number, Archival Series, Box, Folder Title, Folder Number, Finding Aid Permalink | — | No source element in the sample. |
-| Contributing Institution | constant `Grinnell College Libraries` | Every sample item is held by the Libraries. Confirm the wording (Q5). |
+| provenance | `dcterms:provenance` | De-duplicated, semicolon-separated values; not treated as creators or contributors. |
+| source, call_number, archival_series, box, folder_title, folder_number, finding_aid_permalink | — | No source element in the sample. |
+| contributing_institution | constant `Grinnell College Libraries` | Every sample item is held by the Libraries. Confirm the wording (Q5). |
 | publisher | `dcterms:publisher` + `dc:publisher` (combined) | |
 | extent | `dcterms:extent`; fallback: MODS `physicalDescription/extent` | Alma DC has no extent for this collection, so MODS supplies it (e.g. `1 leaf`, `24 photographs`). |
 | medium | `dcterms:medium`; fallback: MODS `physicalDescription/form` | MODS `form` describes the physical carrier (`paper`, `cardboard mounted photograph`). |
 | genre | fallback only: MODS `genre` | Alma DC has no genre element. |
-| type | `dcterms:type (dcterms:DCMIType)`, else `gems.dcmi_type`. Children: `gems.dcmi_type` | Uses Alma's DCMI vocabulary values (`Text`, `Still Image`). GEMS's computed values use the same labels. Compound parents have no DCMIType, so they take their children's shared type. |
-| format | `gems.mime_type` | CollectionBuilder expects a MIME type. `dc:format` values (`born digital`, `reformated digital`) describe digital origin, not file format. |
-| Digital Collection Title | `dcterms:isPartOf` without `Digital Grinnell` | `Digital Grinnell` is the whole repository, not a collection. |
-| Digital Collection Permalink, related, Avian Identifier, Disclaimer | — | No source element. |
+| type | `dcterms:type (dcterms:DCMIType)`, else `dc:type`, else `gems.dcmi_type`. Children: `gems.dcmi_type` | Typed DCMI values win. When absent, preserve the legacy type (`image`, `text`, `compound`, etc.) before using an inferred file type. File-child rows retain their inferred DCMI types. |
+| format | `gems.mime_type` + `dc:format` (combined) | MIME type first, then unqualified `dc:format` digital-origin values (`born digital`, `reformatted digital`), e.g. `image/jpeg; reformatted digital`. Child rows apply the same rule to their own metadata. Typed `dcterms:format` is not used. |
+| digital_collection_title | `dcterms:isPartOf` without `Digital Grinnell` | `Digital Grinnell` is the whole repository, not a collection. |
+| related | `dcterms:relation` + `dc:relation` (combined) | De-duplicated, semicolon-separated values. |
+| digital_collection_permalink, avian_identifier, disclaimer | — | No source element. |
 | identifier | `dc:identifier` value matching `grinnell:<n>`; children: derived from the file's original Alma name (`gems.original_name`) `grinnell_<n>_…` | Keeps the legacy Islandora PID for continuity with old URLs and handles. |
-| Filename | `gems.filenames` | Compound parents list all child filenames. |
-| Item Permalink | `dcterms:identifier (dcterms:URI)`, else `dc:identifier`, value matching `http(s)://hdl.handle.net/…` | The URI-typed identifier is the authoritative handle. Handles exist only for parent/single objects. |
+| filename | `gems.filenames` | Compound parents list all child filenames. |
+| item_permalink | `dcterms:identifier (dcterms:URI)`, else `dc:identifier`, value matching `http(s)://hdl.handle.net/…` | The URI-typed identifier is the authoritative handle. Handles exist only for parent/single objects. |
 | rights | `dc:rights`, else `dcterms:rights`, HTML stripped | The rights anchor text, e.g. `Public Domain in the United States`. |
-| Standardized Rights | the rightsstatements.org `href` in `dc:rights`/`dcterms:rights`, normalized to `http://rightsstatements.org/vocab/<code>/<version>/` | Uses the canonical URI instead of the language-specific page URL. The plain copyright statement has no URL and stays blank (Q6). |
+| standardized_rights | the rightsstatements.org `href` in `dc:rights`/`dcterms:rights`, normalized to `http://rightsstatements.org/vocab/<code>/<version>/` | Uses the canonical URI instead of the language-specific page URL. The plain copyright statement has no URL and stays blank (Q6). |
 
 ## Source elements intentionally not mapped
 
 | Element | Reason |
 | --- | --- |
-| `dc:subject`, `dcterms:alternative`, `oldalttitle` | Alternate titles. The template has no alternative-title column. |
-| `dc:type` | Coarse legacy Islandora types (`compound`, `text`, `image`), superseded by `dcterms:type (dcterms:DCMIType)`. |
+| `oldalttitle` | Legacy alternate title; `title_alternative` is mapped only from `dcterms:alternative`. |
 | `dcterms:tableOfContents` | Lists child titles, which already appear as child rows. |
-| `dc:format` | Digital-origin statement (see `format` above). |
 | `dcterms:dateAccepted` | Not a creation date. |
 | `googlesheetsource`, `dginfo`, `compoundrelationship` | Migration and administrative data from the Islandora-to-Alma move. |
 | `dc:identifier` `alma:…` value | Superseded by `originating_system_id`. |
@@ -119,7 +121,7 @@ Each entry in `rules` is keyed by an output column. Columns without a rule are l
 - ~~**Q2.**~~ Resolved 2026-09-30: DART defines `object_location` (D6).
 - ~~**Q3.**~~ Resolved 2026-09-30: DART defines thumbnails and smalls (D6).
 - **Q4.** Can organizational subjects be identified (e.g. from MARC 610 instead of DC)?
-- **Q5.** What is the exact preferred wording for Contributing Institution?
+- **Q5.** What is the exact preferred wording for contributing_institution?
 - **Q6.** Should the standard copyright statement map to `http://rightsstatements.org/vocab/InC/1.0/`?
 
 ## Decision log
@@ -128,6 +130,10 @@ Add new entries at the top. Record the date, the column(s), what changed in the 
 
 | Date | Column(s) | Decision | Reason |
 | --- | --- | --- | --- |
+| 2026-10-14 | keywords, provenance, related, type | Add unqualified `dc:subject` to new `keywords`; map `dcterms:provenance`, and `dcterms:relation` plus `dc:relation` (combined); use `dc:type` when typed DCMI metadata is absent, before file inference. | Preserve requested source metadata while keeping typed DCMI precedence and file-child behavior. These descriptive fields remain on the main bib row. |
+| 2026-10-14 | format | Combine the inferred MIME type with unqualified `dc:format` values (MIME first). | Preserve the digital-origin statement while keeping the MIME type available; typed `dcterms:format` remains unused. |
+| 2026-10-14 | all Title Case columns | Rename to the snake_case headers in SHOW `grinnell-template.csv` (e.g. `Subject (Topic)` → `subject_topic`, `Filename` → `filename`); order `keywords` after `subject_organization`. | Keep the map identical to the site template header. Rules are unchanged. |
+| 2026-10-14 | title_alternative | Add the new template column after `title`, mapped from `dcterms:alternative`. | Preserve alternate titles on the main bib row; `oldalttitle` remains unmapped. |
 | 2026-10-02 | objectid, parentid | Partial start/limit processing is compound-atomic (D13). | A compound's parent and children are always processed together or not at all, so batches never detach children from parents. |
 | 2026-10-02 | original_file_name, identifier | Compound children are renumbered `<stem>-NN` on the record's own grinnell PID (D12); child identifiers come from the pre-rename name. | A DART folder scan read unrelated compounds' per-file PIDs as one 130+-part sequence; obvious per-compound sequences fix it. |
 | 2026-10-01 | original_file_name | Long numeric-only Alma filenames (MMS IDs, file PIDs) are rebuilt from a meaningful sibling stem, the grinnell PID, or the title (D11). | DART groups compounds by shared filename bases; MMS-ID names are meaningless and defeat grouping (GEMS_FILENAME_RULES.md). |
@@ -135,7 +141,7 @@ Add new entries at the top. Record the date, the column(s), what changed in the 
 | 2026-10-01 | original_file_name | A compound parent borrows the first JPG-style image child's name rather than a TIFF master when both exist (D10). | The derivative DART copies onto the parent then comes from the lightweight access image, not the preservation master. |
 | 2026-10-01 | original_file_name | Fileless `record` rows get `_` + `objectid` (D10). | Every CSV row now has a non-blank unique match key for DART. |
 | 2026-10-01 | original_file_name | Compound parents get `_` + first child's filename instead of a blank (D10). | DART treats `original_file_name` as the universal match key; blank parent names were skipped by derivative generation and broke csvdiff/Seeklight merges. |
-| 2026-10-01 | display_template, Filename | Audio/video + caption bibs become one `transcript` item with a converted `transcripts/<objectid>.csv` (D8). | Matches the site's `transcript` layout for oral histories (PHPP). |
+| 2026-10-01 | display_template, filename | Audio/video + caption bibs become one `transcript` item with a converted `transcripts/<objectid>.csv` (D8). | Matches the site's `transcript` layout for oral histories (PHPP). |
 | 2026-10-01 | extent, medium, genre, creator_*, contributor_* | Added legacy MODS `fallback` rules and the **Legacy MODS folder** setting (D7). | Fill gaps from the pre-migration records without overriding post-migration edits in Alma. |
 | 2026-10-01 | all metadata-sourced columns | Sources switched to qualified keys (`dc:*`, `dcterms:*`, with `xsi:type`). Added `combine`. Subjects now come only from `dcterms:subject`; `type` from `dcterms:type (dcterms:DCMIType)`. | GEMS previously merged `dc:` and `dcterms:` elements and dropped `xsi:type`, which mixed alternate titles into subjects and legacy types into DCMI types. |
 | 2026-09-30 | objectid, parentid | `objectid` is `<slug>_dg_<n>`, persisted in the manifest (D5). Resolves Q1. | Matches site convention. |

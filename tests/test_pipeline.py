@@ -101,7 +101,8 @@ class PipelineTests(unittest.TestCase):
                 (tmp / name).write_text(name, encoding="utf-8")
             metadata = {
                 "dc:title": "Symposium photos", "dc:creator": "Brown, John, 1800-1859; Des Moines Register",
-                "dc:subject": "Old alt title", "dcterms:subject (dcterms:LCSH)": "Slavery; Brown, John, 1800-1859",
+                "dc:subject": "Old alt title", "dcterms:alternative": "Symposium snapshots",
+                "dcterms:subject (dcterms:LCSH)": "Slavery; Brown, John, 1800-1859",
                 "dc:type": "compound", "dcterms:created": "2011", "dcterms:dateAccepted": "2011-10",
                 "dc:identifier": "grinnell:10; http://hdl.handle.net/11084/10; alma:x",
                 "dcterms:identifier (dcterms:URI)": "http://hdl.handle.net/11084/10",
@@ -140,17 +141,21 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(list(range(numbers[0], numbers[0] + 5)), numbers)
             self.assertEqual("Brown, John, 1800-1859", parent["creator_personal"])
             self.assertEqual("Des Moines Register", parent["creator_org"])
-            self.assertEqual(("Slavery", "Brown, John, 1800-1859"), (parent["Subject (Topic)"], parent["Subject (Person)"]))
+            self.assertEqual(("Slavery", "Brown, John, 1800-1859"), (parent["subject_topic"], parent["subject_person"]))
             self.assertEqual("2011", parent["date"])
-            self.assertEqual("Still Image", parent["type"])
-            self.assertEqual("Social Justice at Grinnell", parent["Digital Collection Title"])
-            self.assertEqual(("grinnell:10", "http://hdl.handle.net/11084/10"), (parent["identifier"], parent["Item Permalink"]))
-            self.assertEqual(("Public Domain", "http://rightsstatements.org/vocab/NoC-US/1.0/"), (parent["rights"], parent["Standardized Rights"]))
+            self.assertEqual("compound", parent["type"])
+            self.assertEqual("Old alt title", parent["keywords"])
+            self.assertEqual("", first["keywords"])
+            self.assertEqual(("Symposium snapshots", ""), (parent["title_alternative"], first["title_alternative"]))
+            self.assertEqual("Still Image", first["type"])
+            self.assertEqual("Social Justice at Grinnell", parent["digital_collection_title"])
+            self.assertEqual(("grinnell:10", "http://hdl.handle.net/11084/10"), (parent["identifier"], parent["item_permalink"]))
+            self.assertEqual(("Public Domain", "http://rightsstatements.org/vocab/NoC-US/1.0/"), (parent["rights"], parent["standardized_rights"]))
             self.assertEqual("", parent["image_thumb"])
             # The compound parent's original_file_name is "_" + the first sequenced child (DART's
             # folder-scan convention: first child, numbered first).
             self.assertEqual("_grinnell_12-01.jpg", parent["original_file_name"])
-            self.assertEqual("grinnell_12-01.jpg; grinnell_12-02.jpg", parent["Filename"])
+            self.assertEqual("grinnell_12-01.jpg; grinnell_12-02.jpg", parent["filename"])
             self.assertEqual((parent["objectid"], "image"), (first["parentid"], first["display_template"]))
             self.assertEqual(("Photo 11", "rep11", "grinnell:11"), (first["title"], first["originating_system_id"], first["identifier"]))
             self.assertEqual(("", "image/jpeg"), (first["object_location"], first["format"]))
@@ -650,7 +655,7 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(("transcript", "", "Sound", "audio/mpeg"), (first["display_template"], first["parentid"], first["type"], first["format"]))
             # Files are renamed as a `<stem>-NN` sequence (D12); captions are still recognized (D8).
             self.assertEqual("grinnell_1-02.mp3", first["original_file_name"])
-            self.assertEqual("grinnell_1-02.mp3; grinnell_1-01.vtt", first["Filename"])
+            self.assertEqual("grinnell_1-02.mp3; grinnell_1-01.vtt", first["filename"])
             # The timed-text CSV is named for the media file, per the site's transcript layout.
             with (out / "transcripts" / "grinnell_1-02.csv").open(encoding="utf-8", newline="") as handle:
                 self.assertEqual([

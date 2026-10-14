@@ -29,6 +29,30 @@ Before using button 1, set **Destination folder** in the Retrieve from Alma sect
 
 ## Import a prepared manifest
 
+### Audit an Alma XML record's CSV mapping
+
+Run the reusable mapping audit from the repository root:
+
+```bash
+.venv/bin/python -m gems.mapping_audit /path/to/record.xml \
+  --mms-id 991011597366604641 \
+  --output /path/to/mapping-table.md
+```
+
+Omit `--output` to print Markdown for copying into a context document. Use `-`
+instead of an input path to read XML from standard input. `--field-map /path/to/map.json`
+selects another GEMS template map; the default is
+[maps/alma-dc-to-grinnell.json](maps/alma-dc-to-grinnell.json).
+The optional `--mms-id` supplies Alma's top-level record ID; the audit does not
+guess it from XML identifiers.
+
+The report lists every XML element occurrence, its target columns, actual mapped
+values, and omissions caused by missing rules, filters, or source precedence.
+It also lists target columns without an XML-derived value. It evaluates the main
+bib row using the same parser and rules as GEMS, without contacting Alma,
+downloading files, generating IDs, or reading legacy MODS. Representation-file
+values and MODS fallbacks require those additional sources and are not inferred.
+
 To prepare an Alma Digital collection:
 
 1. In Alma, identify the digital representations or records you want to publish. Export their descriptive metadata using your local Alma reporting/export workflow, or retrieve it through the Alma REST API.
@@ -90,6 +114,19 @@ python -m gems \
 ```
 
 A field map may instead be a *template map*: a JSON object with an ordered `columns` list and per-column `rules`. It writes a CSV with exactly those columns, including compound-object parent/child rows. [maps/alma-dc-to-grinnell.json](maps/alma-dc-to-grinnell.json) targets the Grinnell CollectionBuilder template. Its rule syntax and mapping decisions are documented in [maps/alma-dc-to-grinnell.md](maps/alma-dc-to-grinnell.md). Headless: `--field-map "$(cat maps/alma-dc-to-grinnell.json)"`. Optionally set **Legacy MODS folder** (headless: `--legacy-mods /path/to/DG-Exports`) so the map can fill fields that are empty in Alma from the legacy Digital Grinnell MODS files. Values present in Alma are never overridden.
+
+The Grinnell map includes `title_alternative` from `dcterms:alternative`, a `keywords` column for unqualified `dc:subject` values,
+`provenance` from `dcterms:provenance`, and `related` from `dcterms:relation` plus `dc:relation`.
+`format` combines the inferred MIME type with unqualified `dc:format` values, for
+example `image/jpeg; reformatted digital`.
+The main row's `type` uses typed DCMI metadata first, then `dc:type`, then file
+inference. Generated file-child types remain file-derived. Re-map existing
+manifests to apply these rules; because the CSV schema now includes `keywords`,
+map the entire manifest to rebuild a complete CSV rather than relying on merging
+old-schema batches. Ensure downstream templates retain the new `keywords` column.
+Column names follow the snake_case header of SHOW's `grinnell-template.csv`
+(for example `subject_topic`, `contributing_institution`, `filename`); CSVs
+written with the earlier Title Case headers must also be re-mapped in full.
 
 The export writes:
 - `/path/to/output/collection_metadata.csv`
