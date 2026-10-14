@@ -134,3 +134,113 @@ The export writes:
 - `/path/to/output/objects/*`
 
 The `transcripts/<objectid>.csv` timed-text files keep their fixed `timestamp,speaker,words` shape.
+
+### Original MODS shelf locators
+
+The Grinnell map writes `shelf_locator` from MODS `location/shelfLocator`,
+including item-level `holdingSimple/copyInformation/shelfLocator`. Original
+internal spacing and punctuation are preserved; distinct repeated elements are
+joined with `; `. Parents and children inherit the same physical-source locator.
+There is no Dublin Core equivalent or automatic box/folder parsing.
+
+For future exports, set **Legacy MODS folder** (or headless `--legacy-mods`) to
+the original MODS export root. Without that source, GEMS can only use a previously
+cached `record.shelf_locator` or local `metadata.shelf_locator`; it cannot recover
+MODS-only data from Alma DC. Custom maps must include the shelf-locator rule.
+
+Backfill existing processed records without remapping other metadata:
+
+```bash
+.venv/bin/python -m gems.shelf_backfill plan \
+  --gems-root /Volumes/DGIngest/_GEMS-Migration \
+  --gems-root /path/to/other/GEMS-data \
+  --legacy-mods /Volumes/DGIngest/Migration-to-Alma/exports \
+  --show-root /path/to/SHOW \
+  --report /path/outside/SHOW/shelf-backfill.json
+.venv/bin/python -m gems.shelf_backfill apply /path/outside/SHOW/shelf-backfill.json
+```
+
+The plan reports missing MODS, unmatched rows, and non-empty conflicting values.
+Apply fills empty locators only, preserves existing values and all unrelated
+cells, and backs up each modified file beside the report. Matching uses saved
+GEMS IDs, Alma MMS IDs, legacy identifiers, or filenames; child rows follow their
+published parent. Ambiguous values block planning. The manifest caches non-empty
+locators for subsequent remapping, and processed CSV/normalized JSON outputs and
+matching SHOW collections receive only that field. Original MODS is never changed.
+Missing MODS or absent elements leave locators blank, not inferred. Rerunning a
+fresh plan is idempotent. Build and review affected SHOW collections separately.
+
+## Refresh metadata already published through DART and SHOW
+
+Use the original **mapped** JSON manifest and its **old, unmodified** GEMS CSV
+as a baseline. Do not remap over that baseline first. The refresh command applies
+the current map to the saved metadata in memory: no Alma requests, downloads,
+asset moves, transcript writes, or manifest changes occur.
+
+```bash
+.venv/bin/python -m gems.metadata_refresh plan \
+  --manifest /path/to/original/gems_collection_timestamp.json \
+  --baseline /path/to/original/collection_metadata.csv \
+  --core /path/to/SHOW/collections/ech/_data/collection_metadata.csv \
+  --report /path/to/ech-refresh.json
+```
+
+The default map is `maps/alma-dc-to-grinnell.json`; use `--field-map` to choose
+another template and `--legacy-mods` to read legacy MODS fallbacks. Old Title Case
+headers are normalized to SHOW's snake_case names. Matching uses exact
+`original_file_name`, not GEMS IDs (DART may have assigned different published
+IDs). Missing/duplicate filenames, invalid published identities/parent links,
+and manifests without persisted IDs are rejected.
+If DART changed a compound parent's filename, reconciliation requires a unique
+matching compound Alma MMS ID, identical source/baseline child sets, and verified
+published source files. Core children must belong to that source family; any
+source child DART published separately must retain the same MMS ID and have no
+parent. Reconciled parents are recorded in the report; published filenames,
+identities, and DART's grouping are never changed.
+
+The JSON report lists added mapped columns, unmatched rows, and individual
+changes with baseline/current/proposed values. Three-way comparison automatically
+proposes a change only when the published value still equals the old GEMS value
+or is empty. Published edits are conflicts. Potentially lost legacy-MODS values
+are also conflicts when no MODS directory is supplied. Unchanged source values
+do not replace editorial changes. Existing row order, extra editorial columns,
+IDs, relationships, filenames, display templates, media/transcript URLs,
+image alt text, and thumbnail focus are preserved.
+
+Review all changes, including safe changes that clear obsolete source values.
+Set each unresolved `"decision": null` to `"keep"` or `"apply"` in the report;
+safe changes default to `"apply"` and can also be changed to `"keep"`.
+Then apply:
+
+```bash
+.venv/bin/python -m gems.metadata_refresh apply /path/to/ech-refresh.json
+```
+
+Alternatively, after reviewing the plan, add `--keep-conflicts` to explicitly
+preserve all unresolved conflicts. The command records those `"keep"` decisions
+in the report after a successful apply.
+
+Apply refuses unresolved conflicts, unmatched rows, and inputs changed since
+planning. It creates a timestamped backup next to the review report and atomically
+replaces the core, preserving UTF-8 BOM and line endings. An already-current
+refresh makes no write. For a partial manifest, explicitly use `--allow-partial`
+when planning: unmatched core/baseline rows remain untouched, but unmatched
+source rows still block apply. No records are added or removed.
+If a known source record was never published, explicitly exclude its exact
+`original_file_name` with `--exclude-source NAME` when planning (repeatable).
+Only records present in both source and baseline but absent from the core can
+be excluded; the report records each exclusion for review.
+To refresh the first N **SHOW CSV data rows**, add `--core-row-limit N` when
+planning. The header does not count; parent and child rows each count separately.
+Matching and changes are restricted to those rows, without expanding compound
+families. Later rows retain every existing value; any newly added columns are
+blank there. Apply also rejects changes outside the recorded row limit.
+Keep reports outside SHOW's collection overlay so review files and backups
+cannot accidentally be published or committed as collection data.
+
+Use the same commands for `life`, `phpp-ghm`, `phpp-community`, and `phpp-dcl`,
+with each collection's own manifest, original baseline, and actual SHOW CSV.
+Transcript-bearing manifests are explicitly unsupported by this metadata-only
+route. To incorporate subsequent Alma edits, retrieve a new manifest and
+reconcile its identities first; this tool refreshes the saved Alma snapshot.
+After applying, build and review the affected SHOW collection before deployment.

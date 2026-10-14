@@ -26,7 +26,15 @@ Each entry in `rules` is keyed by an output column. Columns without a rule are l
 | `child` | Rule for compound-object child rows: `"inherit"` (same rule), a rule object, or omitted (blank for children). |
 | `fallback` | A rule (usually `{"from": "mods.<key>"}`) used **only when every `from` source is empty in Alma** before any filtering. `mods.*` sources are rejected anywhere else, so legacy data can never override or be merged with Alma data. A rule with only a `fallback` always uses it. |
 
-`mods.*` values come from the record's legacy Digital Grinnell MODS file (see D7): `extent`, `form`, `genre`, `creator_personal`, `creator_corporate`, `contributor_personal`, `contributor_corporate`.
+`mods.*` values come from the record's legacy Digital Grinnell MODS file (see D7): `extent`, `form`, `genre`, `shelf_locator`, `creator_personal`, `creator_corporate`, `contributor_personal`, `contributor_corporate`.
+
+`shelf_locator` preserves the original text from MODS `location/shelfLocator`
+or `location/holdingSimple/copyInformation/shelfLocator`, without parsing
+call numbers, series, boxes, or folders. Multiple distinct values are joined
+with `; `. Cached `record.shelf_locator` or local `metadata.shelf_locator`
+values take precedence over MODS; no Dublin Core equivalence is implied.
+Children inherit their bib's locator because their files represent the same
+physical resource. See the [MODS location guidelines](https://www.loc.gov/standards/mods/userguide/location.html#shelflocator).
 
 `gems.*` values: `objectid`, `parentid`, `display_template`, `filename` (own file; a compound parent takes a borrowed child name with a `_` prefix — DART's convention, D10), `filenames` (all files for the row), `original_name` (the file's pre-rename Alma name, for deriving per-file identifiers under D12), `label` (Alma representation label), `representation_id`, `mime_type`, `dcmi_type`.
 

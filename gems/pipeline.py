@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import html
 import json
+import logging
 import mimetypes
 import re
 import shutil
@@ -36,6 +37,7 @@ COLLECTIONBUILDER_FIELDS = [
     "rights",
     "relation",
     "source",
+    "shelf_locator",
     "source_system",
     "source_record_url",
     "objectid",
@@ -171,7 +173,10 @@ def process_records(
         rows = merge_batch_rows(rows, csv_path, columns, records)
     else:
         columns = COLLECTIONBUILDER_FIELDS
-        rows = normalize_records(selected, field_map=field_map, source_system=source_system)
+        rows = normalize_records(
+            selected, field_map=field_map, source_system=source_system,
+            legacy_mods_dir=Path(legacy_mods_dir) if legacy_mods_dir else None,
+        )
         exported_files = export_files(rows, destination / "objects")
 
     write_collection_csv(rows, csv_path, columns)
@@ -244,6 +249,7 @@ def normalize_records(
     *,
     field_map: dict[str, str] | None = None,
     source_system: str = "alma_digital",
+    legacy_mods_dir: Path | None = None,
 ) -> list[dict[str, str]]:
     normalized: list[dict[str, str]] = []
     for record in records:
@@ -268,6 +274,13 @@ def normalize_records(
             "rights": resolve_field("rights", record, metadata, field_map),
             "relation": resolve_field("relation", record, metadata, field_map),
             "source": source_url,
+            "shelf_locator": (
+                stringify(record.get("shelf_locator"))
+                or resolve_field("shelf_locator", record, metadata, field_map)
+                or legacy_mods_loader(
+                    record.get("metadata", {}), legacy_mods_dir,
+                )().get("shelf_locator", "")
+            ),
             "source_system": source_system,
             "source_record_url": source_url,
             "objectid": "",
@@ -461,16 +474,20 @@ def map_to_template(
     *,
     progress: ProgressCallback | None = None,
     is_cancelled: CancelCheck | None = None,
+    metadata_only: bool = False,
 ) -> tuple[list[dict[str, str]], int]:
-    """Build one row per record, plus child rows for records with several files (CollectionBuilder compound objects)."""
+    """Build template rows; metadata_only skips asset I/O and rejects transcript conversions."""
     columns = [str(column) for column in template_map["columns"]]
     rules = template_map.get("rules", {})
     assign_objectids(records, "", used_dg_numbers(records))
-    objects_dir.mkdir(parents=True, exist_ok=True)
+    if not metadata_only:
+        objects_dir.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, str]] = []
     count = 0
     claimed_folders: dict[str, str] = {}
     record_items = [representation_items(record) for record in records]
+    if metadata_only and any(transcript_candidates(items) for items in record_items):
+        raise ValueError("Metadata-only mapping does not support transcript assets; use the normal export workflow.")
     total_files = sum(len(items) for items in record_items)
     done = 0
     if progress is not None:
@@ -487,6 +504,8 @@ def map_to_template(
         # (grinnell-310.pdf next to grinnell-1135.pdf) can then never be grouped by a DART scan.
         subdir = objects_dir / record_folder(record, items, claimed_folders) if items else objects_dir
         for item in items:
+            if metadata_only:
+                continue
             if is_cancelled is not None and is_cancelled():
                 raise ExportCancelled()
             destination = subdir / item["filename"]
@@ -550,7 +569,13 @@ def legacy_mods_loader(metadata: dict[str, Any], legacy_mods_dir: Path | None) -
         identifiers = stringify(metadata.get("dc:identifier") or metadata.get("identifier")).split(";")
         pid = next((value.strip() for value in identifiers if LEGACY_PID.match(value.strip())), "")
         path = find_legacy_mods(legacy_mods_dir, pid, stringify(metadata.get("dginfo")))
-        return read_legacy_mods(path) if path else {}
+        if path is None:
+            logging.getLogger("gems").warning(
+                "Legacy MODS not found for %s under %s; MODS-only fields cannot be populated.",
+                pid or "(no legacy identifier)", legacy_mods_dir,
+            )
+            return {}
+        return read_legacy_mods(path)
 
     return load
 

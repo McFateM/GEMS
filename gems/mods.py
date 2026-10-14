@@ -13,11 +13,18 @@ LEGACY_PID = re.compile(r"^([A-Za-z][\w-]*):(\d+)$")
 
 def legacy_collection_folder(dginfo: str) -> str:
     """Folder name from the migration `dginfo` directory, e.g. `social-justice`."""
+    normalized = dginfo.replace('/"', '"').lstrip()
     try:
         # Alma stores this JSON with every quote escaped as /"
-        directory = json.loads(dginfo.replace('/"', '"')).get("directory", "")
+        # Some migrated values append a "dgi" marker after the JSON object.
+        payload, _ = json.JSONDecoder().raw_decode(normalized)
+        directory = payload.get("directory", "")
     except (ValueError, AttributeError):
-        return ""
+        # Embedded title quotes can invalidate the object without affecting its directory.
+        directories = re.findall(r'"directory"\s*:\s*("(?:\\.|[^"\\])*")', normalized)
+        if len(directories) != 1:
+            return ""
+        directory = json.loads(directories[0])
     return PurePosixPath(urlparse(str(directory)).path).name
 
 
@@ -48,6 +55,16 @@ def read_legacy_mods(path: Path) -> dict[str, str]:
         add("form", element.text)
     for element in root.findall("m:genre", MODS_NS):
         add("genre", element.text)
+    shelf_paths = ("m:location/m:shelfLocator",
+                   "m:location/m:holdingSimple/m:copyInformation/m:shelfLocator")
+    shelves = []
+    for xpath in shelf_paths:
+        for element in root.findall(xpath, MODS_NS):
+            text = "".join(element.itertext()).strip()
+            if text and text not in shelves:
+                shelves.append(text)
+    if shelves:
+        values["shelf_locator"] = shelves
     for name in root.findall("m:name", MODS_NS):
         kind = name.get("type")
         if kind not in {"personal", "corporate"}:
