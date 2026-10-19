@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 from hashlib import sha256
@@ -14,10 +15,11 @@ from dotenv import load_dotenv
 
 from .alma import AlmaClient
 from .pipeline import ExportCancelled, is_template_map, process_export
+from .storage import atomic_json
 
 APP_TITLE = "GEMS - Gather, Export, Map, Serialize"
-DATA_DIR = Path.home() / ".GEMS-data"
-SETTINGS_PATH = DATA_DIR / "settings.json"
+DATA_DIR = Path(os.getenv("GEMS_DATA_DIR", str(Path.home() / ".GEMS-data"))).expanduser()
+SETTINGS_PATH = Path(os.getenv("GEMS_CONFIG_DIR", str(DATA_DIR))).expanduser() / "settings.json"
 LOG_PATH = DATA_DIR / "logfiles" / "gems.log"
 LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S %Z"
@@ -48,8 +50,8 @@ def load_settings() -> dict[str, str]:
 
 
 def save_settings(settings: dict[str, str]) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    SETTINGS_PATH.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    atomic_json(SETTINGS_PATH, settings)
 
 
 def main(page: ft.Page) -> None:

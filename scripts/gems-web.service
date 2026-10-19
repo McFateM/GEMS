@@ -1,0 +1,26 @@
+[Unit]
+Description=GEMS private Linux web service
+Wants=network-online.target
+After=network-online.target
+# Add RequiresMountsFor= with the actual configuration and data mount paths.
+
+[Service]
+Type=simple
+User=gems
+Group=gems
+WorkingDirectory=/opt/gems
+EnvironmentFile=/etc/gems/bootstrap.env
+ExecStart=/opt/gems/.venv/bin/python -m gems --web
+UMask=0077
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=300
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# Replace with the actual mounted directories before enabling:
+ReadWritePaths=/REPLACE_WITH_GEMS_CONFIG_DIR /REPLACE_WITH_GEMS_DATA_DIR
+
+[Install]
+WantedBy=multi-user.target

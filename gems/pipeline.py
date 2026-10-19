@@ -177,7 +177,7 @@ def process_records(
             selected, field_map=field_map, source_system=source_system,
             legacy_mods_dir=Path(legacy_mods_dir) if legacy_mods_dir else None,
         )
-        exported_files = export_files(rows, destination / "objects")
+        exported_files = export_files(rows, destination / "objects", progress=progress, is_cancelled=is_cancelled)
 
     write_collection_csv(rows, csv_path, columns)
     write_structured_records(rows, json_path)
@@ -375,18 +375,31 @@ def extract_files(record: dict[str, Any]) -> list[dict[str, str]]:
     return files
 
 
-def export_files(rows: list[dict[str, str]], objects_dir: Path) -> int:
+def export_files(
+    rows: list[dict[str, str]],
+    objects_dir: Path,
+    *,
+    progress: ProgressCallback | None = None,
+    is_cancelled: CancelCheck | None = None,
+) -> int:
     objects_dir.mkdir(parents=True, exist_ok=True)
     count = 0
+    total = sum(bool(row.get("_source_file")) for row in rows)
     for index, row in enumerate(rows, start=1):
+        if is_cancelled is not None and is_cancelled():
+            raise ExportCancelled()
         source = row.pop("_source_file", "")
         if not source:
             continue
         safe_name = safe_filename(row.get("filename") or infer_filename(source, index), index)
+        if progress is not None:
+            progress(safe_name, count, total)
         fetch_object(source, objects_dir / safe_name)
         row["filename"] = safe_name
         row["objectid"] = Path("objects", safe_name).as_posix()
         count += 1
+    if progress is not None:
+        progress("", count, total)
     return count
 
 

@@ -3,11 +3,27 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-if [[ ! -d .venv ]]; then
-  python3 -m venv .venv
-fi
+mode=desktop
+install=0
+args=()
+for arg in "$@"; do
+  case "$arg" in
+    --web) mode=web; args+=("$arg") ;;
+    --headless) mode=core; args+=("$arg") ;;
+    --install) install=1 ;;
+    *) args+=("$arg") ;;
+  esac
+done
 
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r python_requirements.txt
-python -m gems
+if [[ ! -d .venv ]]; then
+  "${GEMS_PYTHON:-python3}" -m venv .venv
+  install=1
+fi
+if [[ "$install" == 1 ]]; then
+  requirement="."
+  if [[ "$mode" != core ]]; then
+    requirement=".[${mode}]"
+  fi
+  .venv/bin/python -m pip install -e "$requirement"
+fi
+exec .venv/bin/python -m gems "${args[@]}"

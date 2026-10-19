@@ -5,8 +5,8 @@ import json
 import os
 
 from .alma import AlmaClient
-from .app import launch
 from .pipeline import process_export
+from .storage import Storage, load_environment
 
 
 def cli() -> int:
@@ -26,9 +26,25 @@ def cli() -> int:
     parser.add_argument("--start", type=int, default=1, help="First manifest record to map (1-based)")
     parser.add_argument("--limit", type=int, help="Number of manifest records to map (default: all)")
     parser.add_argument("--headless", action="store_true", help="Run without starting the Flet UI")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--web", action="store_true", help="Run the private browser service")
+    modes.add_argument("--desktop", action="store_true", help="Run the desktop UI (default)")
+    parser.add_argument("--port", type=int, default=8550, help="Web loopback listener port (default: 8550)")
+    parser.add_argument("--env-file", help="Private environment file, e.g. on a protected network share")
+    parser.add_argument("--init-storage", action="store_true", help="Initialize markers in configured storage roots, then exit")
     args = parser.parse_args()
+    try:
+        load_environment(args.env_file)
+        if args.init_storage:
+            Storage.from_environment().initialize()
+            print("GEMS storage initialized.")
+            return 0
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
 
     if args.source or args.output or args.headless:
+        if args.web or args.desktop:
+            parser.error("UI modes cannot be combined with headless export arguments")
         if not args.source or not args.output:
             parser.error("--source and --output are required in headless mode")
         result = process_export(
@@ -47,7 +63,18 @@ def cli() -> int:
         )
         return 0
 
-    launch()
+    if args.web:
+        if not 1 <= args.port <= 65535:
+            parser.error("--port must be between 1 and 65535")
+        from .web import launch
+
+        launch(port=args.port)
+    else:
+        if os.getenv("GEMS_CONFIG_DIR") or os.getenv("GEMS_DATA_DIR"):
+            Storage.from_environment().check()
+        from .app import launch
+
+        launch()
     return 0
 
 
