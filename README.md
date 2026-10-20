@@ -98,7 +98,7 @@ when setting up another mode or after changing dependencies:
 
 ```bash
 ./run.sh --install --desktop
-./run.sh --install --web --env-file /mounted/private/gems.env
+./run.sh --install --web --env-file /data/gems/config/gems.env
 ```
 
 `python_requirements.txt` remains the desktop installation entry point.
@@ -110,7 +110,7 @@ when the script creates a new environment; Python 3.11+ is required.
 
 The status strip at the bottom shows progress, results, and errors for retrieval and export. Use its copy button to copy the current status message. Its activity-log button reads the current run's `gems.log` after a manifest is saved; startup and pre-run messages remain in `~/.GEMS-data/logfiles/gems.log`.
 
-### Linux/Web service and network storage
+### Linux/Web service and local storage
 
 For the ordered installation, legacy-data migration, acceptance testing, and
 development procedure, follow [Installing GEMS on dg-landing](INSTALL-LINUX.md).
@@ -119,44 +119,52 @@ The `linux` branch adds a private, single-operator Flet web service with durable
 job history. It is **not a public, multi-user service**. It listens only on
 `127.0.0.1` (default port 8550), launches no desktop/browser on the server, and
 requires explicit configuration and data directories. Both directories must
-already exist on administrator-provisioned network mounts. No data is moved
+already exist on administrator-provisioned storage. No data is moved
 automatically, and web mode never falls back to the server home or checkout.
+
+**dg-landing storage plan (2026-10-20):** because the host is web-facing, it
+cannot access the campus SMB `//storage` server. A **500 GB local `/data` store
+has been requested** for GEMS and DART operations; it is not yet confirmed
+provisioned. Use separate application directories there, not a campus SMB mount.
+The proposed GEMS layout below is subject to administrator approval. The 500 GB
+capacity is shared by GEMS and DART; agree on allocation, retention, free-space
+monitoring, and backups before using production data.
 
 Example private environment file, stored outside Git on protected storage:
 
 ```dotenv
-GEMS_CONFIG_DIR=/mnt/workflow/gems/config
-GEMS_DATA_DIR=/mnt/workflow/gems/data
+GEMS_CONFIG_DIR=/data/gems/config
+GEMS_DATA_DIR=/data/gems/data
 ALMA_API_REGION=America
 ALMA_API_KEY=replace-with-authorized-key
 ```
 
-These are examples, not selected deployment paths. The service account needs
-read/write access to both roots. Restrict roots, secrets, and backups to approved
-operators. Use restrictive share ACLs as well as POSIX permissions. Set
+These are proposed paths, not confirmed provisioned directories. The service
+account needs read/write access to both roots. Restrict roots, secrets, and backups to approved
+operators. Use restrictive local permissions and any filesystem ACLs. Set
 `umask 077` for manual service launches.
 
-On the Linux host, after provisioning and verifying the mounts:
+On the Linux host, after provisioning and verifying the local `/data` store:
 
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -e '.[web]'
 .venv/bin/python -m pip check
-# Explicit one-time provisioning, AFTER verifying these are the intended shares:
-.venv/bin/python -m gems --init-storage --env-file /mounted/private/gems.env
-./run.sh --web --env-file /mounted/private/gems.env
+# Explicit one-time initialization, AFTER verifying the intended /data roots:
+.venv/bin/python -m gems --init-storage --env-file /data/gems/config/gems.env
+./run.sh --web --env-file /data/gems/config/gems.env
 ```
 
 `--init-storage` places a `.gems-storage` marker in each configured root.
 Normal startup and job writes require these markers and successful write probes.
-Missing/unwritable storage fails explicitly; do not initialize an unmounted
-mountpoint to bypass this check. Markers detect ordinary missing mounts, not all
-network-filesystem failures. Mount supervision remains an administrator task.
+Missing/unwritable storage fails explicitly; do not initialize an unintended
+directory or an unmounted `/data` mountpoint to bypass this check. Markers
+detect ordinary missing mounts, not every storage failure. Filesystem and
+capacity supervision remain administrator tasks.
 If storage fails during a job and its failure state cannot be persisted, the
 browser and stderr report a write-blocked service. Restore storage and restart;
 the last persisted unfinished state becomes **interrupted**, not successful.
-An already-started file operation cannot be rolled back, and a hard-mounted
-network filesystem can block inside the OS until the mount recovers.
+An already-started file operation cannot be rolled back.
 
 On the operator workstation, open the SSH tunnel and then the browser:
 
@@ -172,10 +180,11 @@ over `FLET_SERVER_PORT`.
 #### Browser workflow and job lifecycle
 
 - All paths are **server paths**. There are no native file/directory pickers or
-  uploads. Copy prepared manifests, originals, and MODS into the data share,
-  and copy your chosen field map into the configuration or data share.
+  uploads. Copy prepared manifests, originals, and MODS into the data root,
+  and copy your chosen field map into the configuration or data root over SSH.
   Workstation `/Volumes/...` paths embedded in manifests must be reviewed and
-  translated to Linux-mounted paths before mapping.
+  translated to Linux `/data` paths before mapping. Transfer material from
+  `//storage` via an approved workstation that can access it, not from dg-landing.
 - Step 1 retrieves the **whole** set, exact collection title, or MMS-ID selection.
   It preserves collection/set grouping, timestamped run directories, retrieval
   counts, and skipped-entry warnings. There is no local emergency-manifest path.
@@ -202,8 +211,8 @@ over `FLET_SERVER_PORT`.
   termination, power loss, or service restart marks queued/running/cancelling
   jobs **interrupted** on next startup. Review partial output and submit a new
   job explicitly; automatic resume/retry is intentionally not implemented.
-- Outputs stay on the private share. The UI displays result paths and logs;
-  it does not publicly serve originals, offer artifact downloads, or expose
+- Outputs stay on dg-landing's private local storage. The UI displays result
+  paths and logs; it does not publicly serve originals, offer artifact downloads, or expose
   metadata-refresh/shelf-backfill maintenance operations.
 
 Job state uses atomic same-directory JSON replacement rather than SQLite WAL,
@@ -211,8 +220,8 @@ which is unsuitable for many network mounts. The filesystem must support
 reliable POSIX advisory file locks, atomic rename, and file/directory `fsync`.
 The service holds an exclusive data-root lock for its entire lifetime; a second
 service process using that root fails startup. Verify these semantics on the
-actual NFS/SMB mount before deployment. Do not run desktop, CLI, maintenance,
-DART, or another host against the same active output tree; those independent
+actual local `/data` filesystem before deployment. Do not run desktop, CLI,
+maintenance, DART, or another host against the same active output tree; those independent
 tools do not participate in this service's lock.
 
 #### Configuration, secrets, and desktop migration
@@ -228,25 +237,28 @@ startup logs and emergency manifests; without overrides its current
 `~/.GEMS-data` behavior is preserved. When overriding desktop storage, configure
 both roots and initialize their markers first, just as for web mode.
 To migrate, stop writers, back up existing
-state, copy selected settings/maps/runs to the approved shares, and review all
+state, copy selected settings/maps/runs to the approved storage roots, and review all
 saved paths. The desktop **Destination folder** remains a separate remembered
-setting and must also point at the share. No existing local data is deleted.
+setting and must point at the intended output location on that desktop.
+dg-landing's `/data` is not a shared Mac mount; keep workstation and Linux
+paths/settings separate. No existing local data is deleted.
 
 Encryption is deliberately not invented inside GEMS. Environment files contain
 plaintext unless protected by approved encrypted storage. Use institutional
 encryption at rest/in transit and backup policy, or inject `ALMA_API_KEY` through
 an approved secret manager into the service environment. Do not put a decryption
 key beside an encrypted secret or assume an application password protects
-network-share files. Logs/manifests can contain restricted metadata and signed
+stored files. Logs/manifests can contain restricted metadata and signed
 URLs and require the same access controls as originals.
 
 #### Managed hosting
 
 [scripts/gems-web.service](scripts/gems-web.service) is a **template**, not an
 enabled deployment. Before installing it, choose the service account, checkout,
-virtual environment, and actual mounted roots; replace the `ReadWritePaths`
-placeholders and add `RequiresMountsFor=` for both mounts. Its local
-`/etc/gems/bootstrap.env` should contain only a non-secret `GEMS_ENV_FILE` pointer
+virtual environment, and approved `/data` roots; replace the `ReadWritePaths`
+placeholders and add `RequiresMountsFor=` for both paths to order their backing
+mounts. Its local `/etc/gems/bootstrap.env` should contain only a non-secret
+`GEMS_ENV_FILE` pointer
 to the approved private configuration file (or use the institution's secret
 injection mechanism). Allow outbound HTTPS to Alma and actual object hosts.
 Install/build dependencies during deployment, never at service start.
@@ -254,7 +266,8 @@ Install/build dependencies during deployment, never at service start.
 The template uses restrictive permissions, a read-only system filesystem, and a
 five-minute shutdown grace period. Tune this for measured maximum download
 times; a forced stop can leave interrupted/partial output. Capture stdout/stderr
-in the journal, back up both shares, and test restore with the service stopped.
+in the journal, back up both storage roots, and test restore with the service
+stopped. Local `/data` storage is not itself a backup.
 
 Until an approved HTTPS reverse proxy and institutional authentication protect
 **both HTTP and WebSockets**, use only the SSH tunnel. Loopback is not user
@@ -264,8 +277,8 @@ manifests/maps, including referenced local files and download URLs; it is not
 an untrusted-upload sandbox. Do not expose it to untrusted users.
 
 Linux deployment acceptance still requires tests on dg-landing: exact Python
-and OS, mount locking/rename semantics, offline export, a small authorized Alma
-retrieval/download, tab disconnect/reconnect, restart/interruption, and storage
+and OS, local filesystem locking/rename semantics, offline export, a small
+authorized Alma retrieval/download, tab disconnect/reconnect, restart/interruption, and storage
 outage/restore. Tests run on a Mac do not certify those host-specific behaviors.
 After a passing Linux deployment, capture a platform-specific dependency
 constraints file and release revision. DART migration is a separate follow-up.

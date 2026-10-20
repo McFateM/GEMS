@@ -2,7 +2,8 @@
 Description=GEMS private Linux web service
 Wants=network-online.target
 After=network-online.target
-# Add RequiresMountsFor= with the actual configuration and data mount paths.
+# Add RequiresMountsFor= with the approved configuration and data paths.
+# dg-landing proposes /data/gems/config and /data/gems/data on local storage.
 
 [Service]
 Type=simple
@@ -19,7 +20,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-# Replace with the actual mounted directories before enabling:
+# Replace with the provisioned storage directories before enabling:
 ReadWritePaths=/REPLACE_WITH_GEMS_CONFIG_DIR /REPLACE_WITH_GEMS_DATA_DIR
 
 [Install]

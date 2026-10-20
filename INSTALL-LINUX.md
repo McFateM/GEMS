@@ -1,16 +1,23 @@
 # Installing and testing GEMS on dg-landing
 
 This runbook covers the `linux` branch: a private, single-operator Flet web
-service with durable jobs and network-backed configuration/data. Desktop mode
-remains available. Use the [README](README.md#linuxweb-service-and-network-storage)
+service with durable jobs and local configuration/data under `/data`. Desktop mode
+remains available. Use the [README](README.md#linuxweb-service-and-local-storage)
 for application behavior and the
 [dg-landing quick start](../dg-landing/README.md) for VPN/SSH access.
 
 **Status, 2026-10-19:** implementation has been tested locally on macOS, including
 87 unit tests and browser/restart tests. It has not been installed or certified
-on dg-landing or your actual shares. The `linux` changes are currently
+on dg-landing or its intended storage. The `linux` changes are currently
 **uncommitted and unpushed**; an ordinary clone cannot obtain them yet.
 The commands below are instructions, not actions already performed.
+
+**Storage plan, 2026-10-20:** dg-landing is web-facing and cannot access the
+campus SMB `//storage` server. A **500 GB local `/data` store has been requested**
+for GEMS and DART operations; provisioning is not yet confirmed. Do not mount
+`//storage` on dg-landing. The paths below propose separate GEMS roots under
+`/data/gems`; confirm them with the administrator once `/data` is available.
+DART's directory layout and migration remain a separate follow-up.
 
 ## 1. Publish the branch from the Mac
 
@@ -35,7 +42,7 @@ git add .env.example README.md INSTALL-LINUX.md run.sh \
   scripts/gems-web.service tests/test_service.py
 git diff --cached --stat
 git diff --cached
-git commit -m "Add private Linux web service and network storage" \
+git commit -m "Add private Linux web service and local storage" \
   -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
 git push -u origin linux
 git rev-parse HEAD
@@ -66,16 +73,18 @@ or install a desktop environment.
 
 Before using real collections, agree on:
 
-- The NFS/SMB share, Linux mountpoint, corresponding Mac mountpoint, capacity,
-  backup/restore policy, restricted-data approval, and encryption in transit/at
-  rest. Mount credentials belong in administrator-managed protected storage,
-  not in Git, shell history, or this runbook.
+- Provisioning of the requested 500 GB local `/data` store, its backing
+  filesystem, backup/restore policy, restricted-data approval, and encryption
+  at rest. This capacity is for GEMS and DART together, not 500 GB per
+  application; agree on space allocation, retention, and free-space monitoring.
+  Local storage is not a backup. Transfers from workstations use SSH, not a
+  campus SMB mount on dg-landing.
 - Which Linux account runs development tests and which dedicated account will
   eventually run the managed service. Neither application should run as root.
-- Share ACLs and account/group mappings that allow the approved operator/service
-  to read and write, without granting general campus access.
+- Local ownership, permissions, and any filesystem ACLs that allow the approved
+  operator/service to read and write, without granting general campus access.
 - Outbound HTTPS access to Alma and the actual original-object download hosts.
-- Mount support for advisory locking, atomic rename, and file/directory `fsync`.
+- Filesystem support for advisory locking, atomic rename, and file/directory `fsync`.
   Failure of these operations is a deployment blocker, not a reason to suppress
   exceptions. One application process is supported; this is not a distributed
   multi-host worker system.
@@ -84,12 +93,12 @@ For the remaining Linux examples, replace these sample values with approved
 paths, in each new shell:
 
 ```bash
-export GEMS_CONFIG_DIR=/mnt/workflow/gems/config
-export GEMS_DATA_DIR=/mnt/workflow/gems/data
-export GEMS_ENV_FILE=/mnt/workflow/gems/config/gems.env
+export GEMS_CONFIG_DIR=/data/gems/config
+export GEMS_DATA_DIR=/data/gems/data
+export GEMS_ENV_FILE=/data/gems/config/gems.env
 ```
 
-Have the administrator mount the share and provision the two directories
+Have the administrator provision `/data` and the two restricted GEMS directories
 before continuing. Verify the backing filesystem, not just directory existence:
 
 ```bash
@@ -100,8 +109,10 @@ test -d "$GEMS_CONFIG_DIR" && test -w "$GEMS_CONFIG_DIR"
 test -d "$GEMS_DATA_DIR" && test -w "$GEMS_DATA_DIR"
 ```
 
-**Stop if these resolve to an unintended local filesystem.** Do not initialize
-markers on an empty, unmounted mountpoint. GEMS does not create mounts.
+**Stop unless these resolve to the administrator-approved local `/data` store
+with the expected capacity.** If `/data` is a separate mount, do not initialize
+markers on its empty, unmounted mountpoint or an unintended root filesystem.
+GEMS does not provision storage or create mounts.
 
 ## 3. Install a fresh Linux checkout and environment
 
@@ -143,13 +154,13 @@ ${EDITOR:-vi} "$GEMS_ENV_FILE"
 Example contents, replacing paths and key:
 
 ```dotenv
-GEMS_CONFIG_DIR=/mnt/workflow/gems/config
-GEMS_DATA_DIR=/mnt/workflow/gems/data
+GEMS_CONFIG_DIR=/data/gems/config
+GEMS_DATA_DIR=/data/gems/data
 ALMA_API_REGION=America
 ALMA_API_KEY=replace-with-authorized-key
 ```
 
-Network ACLs may override or ignore POSIX modes: verify access with the
+Verify effective local permissions and any filesystem ACLs with the
 administrator. Environment files are plaintext unless the underlying storage is
 encrypted. If institutional policy requires a secret manager, inject
 `ALMA_API_KEY` into the process environment instead of saving it in this file.
@@ -157,7 +168,7 @@ GEMS does not decrypt secret files; do not save a decryption key alongside them.
 Process variables override file values, so remove stale overrides when testing
 a changed configuration.
 
-From the Linux GEMS checkout, initialize only the verified mounted roots:
+From the Linux GEMS checkout, initialize only the verified `/data` roots:
 
 ```bash
 .venv/bin/python -m gems --init-storage --env-file "$GEMS_ENV_FILE"
@@ -165,7 +176,7 @@ From the Linux GEMS checkout, initialize only the verified mounted roots:
 
 This writes `.gems-storage` markers, not application data migrations.
 Normal web startup requires these markers and writable storage. No web-mode
-fallback to local disk is permitted.
+fallback to the home directory, checkout, or another storage location is permitted.
 
 ## 5. Copy legacy data; do not delete the originals
 
@@ -200,31 +211,31 @@ mkdir -p "$GEMS_DATA_DIR/migrated/home-state"
 mkdir -p "$GEMS_DATA_DIR/legacy-mods" "$GEMS_DATA_DIR/pilot"
 ```
 
-From the **Mac**, these examples copy over SSH to the Linux-mounted destination.
+From the **Mac**, these examples copy over SSH to dg-landing's local `/data` store.
 Replace remote paths with the actual approved values. A trailing slash copies
 the source directory's contents. Run a dry-run first, then remove only `n` from
 `-anv` to perform the copy:
 
 ```bash
 rsync -anv ~/GitHub/GEMS/GEMS-data/ \
-  dg-landing:/mnt/workflow/gems/data/migrated/checkout-runs/
+  dg-landing:/data/gems/data/migrated/checkout-runs/
 rsync -anv ~/.GEMS-data/ \
-  dg-landing:/mnt/workflow/gems/data/migrated/home-state/
+  dg-landing:/data/gems/data/migrated/home-state/
 rsync -anv ~/GitHub/GEMS/maps/ \
-  dg-landing:/mnt/workflow/gems/config/maps/
+  dg-landing:/data/gems/config/maps/
 ```
 
 Repeat for each additional destination/MODS/originals source. Do not use
-`--delete`. If archive mode reports ownership/mode errors on SMB, agree on an
-ACL-compatible rsync option set with the administrator rather than ignoring
-errors. If a Mac source and Linux destination are the **same underlying share**,
-do not copy the tree onto itself: verify the path mapping and reuse it instead.
+`--delete`. If archive mode reports ownership/mode errors, agree on an
+appropriate rsync option set with the administrator rather than ignoring
+errors. If source material resides on `//storage`, transfer it from an approved
+workstation that can access that share; dg-landing must not mount or access it.
 
 After copying, verify file content with a checksum dry-run, for example:
 
 ```bash
 rsync -rnci ~/GitHub/GEMS/GEMS-data/ \
-  dg-landing:/mnt/workflow/gems/data/migrated/checkout-runs/
+  dg-landing:/data/gems/data/migrated/checkout-runs/
 ```
 
 No reported file changes indicates matching source file contents; rsync exit
@@ -239,11 +250,11 @@ separately. Keep the original copies until acceptance and backup review.
   afresh; preferences are saved when submitting a job.
 - Keep archived Mac settings for reference. For continued desktop use, copy a
   reviewed settings file into `GEMS_CONFIG_DIR/settings.json` and update paths
-  for that desktop's mounts. A shared settings file cannot simultaneously use
-  incompatible Mac and Linux absolute paths.
+  for that desktop's storage. Keep Mac desktop settings separate from Linux
+  settings: `/data` is local to dg-landing, not a shared Mac mount.
 - In a **pilot copy**, inspect prepared manifests for local `path`, `local_path`,
   `file`, `source`, and `file://` references. Translate only actual filesystem
-  values to Linux mount paths, preserving metadata, IDs, and URLs. Do not apply
+  values to Linux `/data` paths, preserving metadata, IDs, and URLs. Do not apply
   a global text replacement to archival JSON. Relative file references also
   need review; do not assume they resolve relative to the manifest.
 - Signed Alma links can expire. The mapping pipeline refreshes supported Alma
@@ -257,7 +268,7 @@ The web service trusts approved operators and prepared manifests, including
 embedded local-file references and download URLs. It is not an untrusted-upload
 sandbox. Outputs are written beside the chosen manifest.
 
-## 6. Prove an offline export on the actual share
+## 6. Prove an offline export on the local /data store
 
 On Linux, from the checkout, run this with the storage variables from step 2:
 
@@ -333,7 +344,9 @@ testing larger batches.
 
 - [ ] Record Linux OS/architecture, Python version, Git revision, and package
   versions (`.venv/bin/python -m pip freeze`); tests and `pip check` pass.
-- [ ] Offline and browser smoke exports write correct objects/CSV to the share.
+- [ ] The requested 500 GB local `/data` store is provisioned; GEMS/DART space
+  allocation, retention, free-space monitoring, and backups are agreed.
+- [ ] Offline and browser smoke exports write correct objects/CSV to `/data`.
 - [ ] Authorized Alma retrieval and signed-link refresh work from dg-landing.
 - [ ] Template-map batches merge correctly, IDs remain stable, and MODS fills
   only fields empty in Alma.
@@ -341,13 +354,13 @@ testing larger batches.
 - [ ] Second browser tab is read-only. Closing the operator tab transfers
   control, while any running job continues; history/job URL restores status.
 - [ ] A second web process using the same roots refuses startup while the first
-  holds the lock. This must be verified on the actual network filesystem.
+  holds the lock. This must be verified on the actual `/data` filesystem.
 - [ ] Cancel a disposable job, wait for it to stop, and inspect partial output.
 - [ ] Restart with a completed job and confirm persisted history. On a
   disposable test job, exercise forced termination and verify the unfinished
   job is **interrupted**, never automatically resumed or reported successful.
 - [ ] With administrator supervision and isolated pilot storage, simulate
-  unavailable storage and restoration. Never unmount a shared production
+  unavailable storage and restoration. Never unmount the production `/data`
   volume simply to test this. Verify explicit failure/no home-directory
   fallback, restore storage, and restart a write-blocked service.
 - [ ] Restore a backup into separate pilot roots and validate its files/state.
@@ -393,12 +406,13 @@ Have the administrator adapt [scripts/gems-web.service](scripts/gems-web.service
 1. Use a dedicated service account and a release checkout/venv outside home
    directories, matching the unit's `/opt/gems` paths or updating them.
 2. Replace both `ReadWritePaths` placeholders; add `RequiresMountsFor=` with
-   actual mount paths in `[Unit]`.
+   approved configuration/data paths in `[Unit]` so their backing mounts are ready.
 3. Provision `/etc/gems/bootstrap.env` with a non-secret `GEMS_ENV_FILE` pointer
-   to the protected share file. Confirm all required read paths are accessible
-   under `ProtectSystem`/`ProtectHome`, including legacy inputs and CA bundles.
+   to `/data/gems/config/gems.env` (or the approved protected file). Confirm all
+   required read paths are accessible under `ProtectSystem`/`ProtectHome`,
+   including legacy inputs and CA bundles.
 4. Test the edited unit and its effective permissions. Its five-minute stop
-   timeout may need adjustment for real downloads and mount behavior.
+   timeout may need adjustment for real downloads and storage behavior.
 5. Install dependencies at deployment time. Record/pin an approved Linux
    dependency set after passing tests; no cross-platform lock is supplied yet.
 6. Use systemd/journal monitoring, backups, and a tested rollback procedure.
