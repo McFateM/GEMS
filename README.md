@@ -98,7 +98,7 @@ when setting up another mode or after changing dependencies:
 
 ```bash
 ./run.sh --install --desktop
-./run.sh --install --web --env-file /data/gems/config/gems.env
+./run.sh --install --web --env-file "$HOME/gems-pilot/config/gems.env"
 ```
 
 `python_requirements.txt` remains the desktop installation entry point.
@@ -119,47 +119,71 @@ The `linux` branch adds a private, single-operator Flet web service with durable
 job history. It is **not a public, multi-user service**. It listens only on
 `127.0.0.1` (default port 8550), launches no desktop/browser on the server, and
 requires explicit configuration and data directories. Both directories must
-already exist on administrator-provisioned storage. No data is moved
-automatically, and web mode never falls back to the server home or checkout.
+already exist on approved storage; the current pilot uses explicitly configured
+home-directory roots. No data is moved automatically, and web mode never falls
+back to the server home or checkout.
 
 **dg-landing storage plan (2026-10-20):** because the host is web-facing, it
 cannot access the campus SMB `//storage` server. A **500 GB local `/data` store
-has been requested** for GEMS and DART operations; it is not yet confirmed
-provisioned. Use separate application directories there, not a campus SMB mount.
-The proposed GEMS layout below is subject to administrator approval. The 500 GB
-capacity is shared by GEMS and DART; agree on allocation, retention, free-space
-monitoring, and backups before using production data.
+has been requested** for GEMS and DART operations, but **it is not ready**.
+All current Linux storage and transfer examples use `$HOME/gems-pilot` on
+dg-landing. Keep inputs/downloads small and confirm home-directory quota,
+access controls, encryption, and backups with the administrator.
+Do not create a substitute `/data` on the root disk or mount campus SMB.
 
-Example private environment file, stored outside Git on protected storage:
+On **dg-landing**, create and verify the pilot roots. Re-export these variables
+in each new Linux shell:
+
+```bash
+umask 077
+export GEMS_CONFIG_DIR="$HOME/gems-pilot/config"
+export GEMS_DATA_DIR="$HOME/gems-pilot/data"
+export GEMS_ENV_FILE="$GEMS_CONFIG_DIR/gems.env"
+mkdir -p "$GEMS_CONFIG_DIR" "$GEMS_DATA_DIR/pilot"
+findmnt -T "$GEMS_CONFIG_DIR"
+findmnt -T "$GEMS_DATA_DIR"
+df -h "$GEMS_CONFIG_DIR" "$GEMS_DATA_DIR"
+test -d "$GEMS_CONFIG_DIR" && test -w "$GEMS_CONFIG_DIR"
+test -d "$GEMS_DATA_DIR" && test -w "$GEMS_DATA_DIR"
+printf 'Configuration: %s\nData: %s\n' "$GEMS_CONFIG_DIR" "$GEMS_DATA_DIR"
+touch "$GEMS_ENV_FILE"
+chmod 600 "$GEMS_ENV_FILE"
+nano "$GEMS_ENV_FILE"
+```
+
+Example private environment file, stored outside Git on protected storage.
+Replace `YOUR_LINUX_USER` with your Linux account, using the full absolute
+paths printed above if your home is elsewhere. Do not use literal `$HOME` or
+`~` in the file:
 
 ```dotenv
-GEMS_CONFIG_DIR=/data/gems/config
-GEMS_DATA_DIR=/data/gems/data
+GEMS_CONFIG_DIR=/home/YOUR_LINUX_USER/gems-pilot/config
+GEMS_DATA_DIR=/home/YOUR_LINUX_USER/gems-pilot/data
 ALMA_API_REGION=America
 ALMA_API_KEY=replace-with-authorized-key
 ```
 
-These are proposed paths, not confirmed provisioned directories. The service
-account needs read/write access to both roots. Restrict roots, secrets, and backups to approved
+The pilot runs as your normal Linux account, which needs read/write access
+to both roots. Restrict roots, secrets, and backups to approved
 operators. Use restrictive local permissions and any filesystem ACLs. Set
 `umask 077` for manual service launches.
 
-On the Linux host, after provisioning and verifying the local `/data` store:
+From the Linux checkout, after configuring and verifying the pilot roots:
 
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -e '.[web]'
 .venv/bin/python -m pip check
-# Explicit one-time initialization, AFTER verifying the intended /data roots:
-.venv/bin/python -m gems --init-storage --env-file /data/gems/config/gems.env
-./run.sh --web --env-file /data/gems/config/gems.env
+# Explicit one-time initialization, AFTER verifying the intended pilot roots:
+.venv/bin/python -m gems --init-storage --env-file "$GEMS_ENV_FILE"
+./run.sh --web --env-file "$GEMS_ENV_FILE"
 ```
 
 `--init-storage` places a `.gems-storage` marker in each configured root.
 Normal startup and job writes require these markers and successful write probes.
 Missing/unwritable storage fails explicitly; do not initialize an unintended
-directory or an unmounted `/data` mountpoint to bypass this check. Markers
-detect ordinary missing mounts, not every storage failure. Filesystem and
+directory to bypass this check. Markers detect ordinary missing mounts, not
+every storage failure. Filesystem and
 capacity supervision remain administrator tasks.
 If storage fails during a job and its failure state cannot be persisted, the
 browser and stderr report a write-blocked service. Restore storage and restart;
@@ -183,8 +207,9 @@ over `FLET_SERVER_PORT`.
   uploads. Copy prepared manifests, originals, and MODS into the data root,
   and copy your chosen field map into the configuration or data root over SSH.
   Workstation `/Volumes/...` paths embedded in manifests must be reviewed and
-  translated to Linux `/data` paths before mapping. Transfer material from
-  `//storage` via an approved workstation that can access it, not from dg-landing.
+  translated to absolute Linux `gems-pilot` paths before mapping. Transfer
+  material from `//storage` via an approved workstation that can access it,
+  not from dg-landing.
 - Step 1 retrieves the **whole** set, exact collection title, or MMS-ID selection.
   It preserves collection/set grouping, timestamped run directories, retrieval
   counts, and skipped-entry warnings. There is no local emergency-manifest path.
@@ -220,7 +245,8 @@ which is unsuitable for many network mounts. The filesystem must support
 reliable POSIX advisory file locks, atomic rename, and file/directory `fsync`.
 The service holds an exclusive data-root lock for its entire lifetime; a second
 service process using that root fails startup. Verify these semantics on the
-actual local `/data` filesystem before deployment. Do not run desktop, CLI,
+actual pilot filesystem before use, and repeat after any storage migration.
+Do not run desktop, CLI,
 maintenance, DART, or another host against the same active output tree; those independent
 tools do not participate in this service's lock.
 
@@ -240,7 +266,7 @@ To migrate, stop writers, back up existing
 state, copy selected settings/maps/runs to the approved storage roots, and review all
 saved paths. The desktop **Destination folder** remains a separate remembered
 setting and must point at the intended output location on that desktop.
-dg-landing's `/data` is not a shared Mac mount; keep workstation and Linux
+dg-landing's `$HOME/gems-pilot` is not a shared Mac mount; keep workstation and Linux
 paths/settings separate. No existing local data is deleted.
 
 Encryption is deliberately not invented inside GEMS. Environment files contain
@@ -251,10 +277,27 @@ key beside an encrypted secret or assume an application password protects
 stored files. Logs/manifests can contain restricted metadata and signed
 URLs and require the same access controls as originals.
 
-#### Managed hosting
+#### Moving to /data when ready
+
+Continue using `$HOME/gems-pilot` until the administrator provisions and verifies
+the requested store. The 500 GB capacity will be shared by GEMS and DART; agree
+on allocation, retention, monitoring, access controls, and backups first.
+Follow [Moving the pilot to the new /data store](INSTALL-LINUX.md#moving-the-pilot-to-the-new-data-store)
+for the full cutover: stop writers, back up the pilot, verify empty destination
+roots, copy both complete trees including hidden state, checksum the copies,
+update the destination environment file and launch variables, and review saved
+paths without rewriting archival evidence. Repeat storage and browser acceptance
+tests on the new filesystem. Keep the pilot source until acceptance and backup
+review; never run writers against both copies.
+
+#### Future managed hosting after migration
+
+The current pilot runs in the foreground through the SSH tunnel. Do not install
+the managed-service template for home-directory storage: `ProtectHome=true`
+deliberately blocks those paths.
 
 [scripts/gems-web.service](scripts/gems-web.service) is a **template**, not an
-enabled deployment. Before installing it, choose the service account, checkout,
+enabled deployment. After migration and acceptance, choose the service account, checkout,
 virtual environment, and approved `/data` roots; replace the `ReadWritePaths`
 placeholders and add `RequiresMountsFor=` for both paths to order their backing
 mounts. Its local `/etc/gems/bootstrap.env` should contain only a non-secret
