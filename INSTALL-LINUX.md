@@ -18,6 +18,8 @@ for GEMS and DART operations; provisioning is not yet confirmed. Do not mount
 `//storage` on dg-landing. The paths below propose separate GEMS roots under
 `/data/gems`; confirm them with the administrator once `/data` is available.
 DART's directory layout and migration remain a separate follow-up.
+You can begin small, approved pilot tests before `/data` is provisioned; use
+[temporary pilot storage](#temporary-pilot-storage-before-data-is-ready) below.
 
 ## 1. Publish the branch from the Mac
 
@@ -98,8 +100,10 @@ export GEMS_DATA_DIR=/data/gems/data
 export GEMS_ENV_FILE=/data/gems/config/gems.env
 ```
 
-Have the administrator provision `/data` and the two restricted GEMS directories
-before continuing. Verify the backing filesystem, not just directory existence:
+For the intended deployment, have the administrator provision `/data` and the
+two restricted GEMS directories before continuing. For early testing instead,
+use the temporary-storage option below. Verify the backing filesystem, not just
+directory existence:
 
 ```bash
 findmnt -T "$GEMS_CONFIG_DIR"
@@ -113,6 +117,53 @@ test -d "$GEMS_DATA_DIR" && test -w "$GEMS_DATA_DIR"
 with the expected capacity.** If `/data` is a separate mount, do not initialize
 markers on its empty, unmounted mountpoint or an unintended root filesystem.
 GEMS does not provision storage or create mounts.
+
+### Temporary pilot storage before /data is ready
+
+GEMS does not require a separate volume or the literal path `/data`. It requires
+explicit, existing, writable configuration and data roots with initialized
+storage markers. For small pilot tests, deliberately configure temporary
+storage outside the checkout, preferably under your normal account's home:
+
+```bash
+umask 077
+export GEMS_CONFIG_DIR="$HOME/gems-pilot/config"
+export GEMS_DATA_DIR="$HOME/gems-pilot/data"
+export GEMS_ENV_FILE="$GEMS_CONFIG_DIR/gems.env"
+
+mkdir -p "$GEMS_CONFIG_DIR" "$GEMS_DATA_DIR/pilot"
+df -h "$GEMS_DATA_DIR"
+printf 'Configuration: %s\nData: %s\n' "$GEMS_CONFIG_DIR" "$GEMS_DATA_DIR"
+```
+
+Check available space and any account quota with the administrator. The
+requested 500 GB is not available yet; keep test inputs/downloads small and
+monitor usage. Use only data approved for this filesystem's access controls,
+encryption, and backup arrangements.
+
+**Do not create a temporary `/data` directory on the root filesystem.** Mounting
+the future volume over it would hide, not migrate, existing contents; those
+files would continue consuming space on the root disk. Another approved,
+explicit temporary path is fine.
+
+Continue with steps 3 and 4 using the temporary variables above. In the
+environment file, use the full absolute paths printed by `printf`, not the
+`/data` example values or literal `$HOME`. Re-export the temporary variables in
+each new shell. Use these roots for storage checks and initialization; this is
+an intentional pilot configuration, not an automatic fallback after a storage
+failure.
+
+In step 5, copy only the small inputs needed for the pilot, and replace all
+hard-coded remote `/data/gems/...` destinations with your actual absolute
+temporary paths. Do not migrate whole collections into limited home storage.
+Steps 6 and 7 use the configured roots for offline and browser testing. Run the
+service in the foreground through the SSH tunnel; the managed-service
+template's `ProtectHome=true` prevents use of these home-directory roots.
+
+These tests can validate installation, exports, and browser behavior, but do
+not certify the eventual `/data` filesystem. Follow
+[Moving the pilot to the new /data store](#moving-the-pilot-to-the-new-data-store)
+when it becomes available, then repeat storage-specific acceptance tests.
 
 ## 3. Install a fresh Linux checkout and environment
 
@@ -139,6 +190,20 @@ Web installation includes Flet, so the UI unit tests can import it without
 installing the desktop runtime. For a CLI-only environment use `pip install -e .`;
 that environment does not support running the Flet-dependent tests.
 
+The unit tests do not require your pilot environment file or storage markers;
+those are created in step 4. If an older checkout's entry-point tests fail
+because they inherit `GEMS_CONFIG_DIR`, `GEMS_DATA_DIR`, or `GEMS_ENV_FILE`,
+update to the test-isolation fix. Until then, run the suite with those variables
+removed only for the test process:
+
+```bash
+env -u GEMS_CONFIG_DIR -u GEMS_DATA_DIR -u GEMS_ENV_FILE \
+  .venv/bin/python -m unittest discover -s tests -p 'test_*.py'
+```
+
+This leaves the pilot variables in your shell unchanged. Do not bypass
+application storage checks or create markers merely to satisfy unit tests.
+
 ## 4. Configure secrets and initialize storage
 
 On Linux, create the private environment file with an editor, not a command
@@ -148,10 +213,24 @@ containing the real API key:
 umask 077
 touch "$GEMS_ENV_FILE"
 chmod 600 "$GEMS_ENV_FILE"
-${EDITOR:-vi} "$GEMS_ENV_FILE"
+nano "$GEMS_ENV_FILE"
 ```
 
-Example contents, replacing paths and key:
+Use nano for manual file edits in this runbook. Save with Ctrl+O, press Enter
+to confirm the filename, then exit with Ctrl+X. If nano is not installed, ask
+the administrator to install it. To make it the default editor for tools that
+honor these variables, add the following to your shell startup file using nano
+(for example, `nano ~/.bashrc` for interactive Bash sessions):
+
+```bash
+export EDITOR=nano
+export VISUAL=nano
+```
+
+Open a new shell afterward, or run those two exports in the current shell.
+
+Example contents, replacing paths and key. For temporary pilot storage,
+substitute the full absolute roots selected in step 2:
 
 ```dotenv
 GEMS_CONFIG_DIR=/data/gems/config
@@ -168,7 +247,8 @@ GEMS does not decrypt secret files; do not save a decryption key alongside them.
 Process variables override file values, so remove stale overrides when testing
 a changed configuration.
 
-From the Linux GEMS checkout, initialize only the verified `/data` roots:
+From the Linux GEMS checkout, initialize only the verified `/data` roots (or
+the explicitly selected temporary pilot roots):
 
 ```bash
 .venv/bin/python -m gems --init-storage --env-file "$GEMS_ENV_FILE"
@@ -176,7 +256,8 @@ From the Linux GEMS checkout, initialize only the verified `/data` roots:
 
 This writes `.gems-storage` markers, not application data migrations.
 Normal web startup requires these markers and writable storage. No web-mode
-fallback to the home directory, checkout, or another storage location is permitted.
+automatic fallback to the home directory, checkout, or another storage location
+is permitted. An explicitly configured home-directory pilot root is supported.
 
 ## 5. Copy legacy data; do not delete the originals
 
@@ -367,6 +448,66 @@ testing larger batches.
 
 No concurrent desktop/CLI/maintenance/DART writer may touch the active output
 tree. These other tools do not participate in the web service lock.
+
+### Moving the pilot to the new /data store
+
+Do not mount the new volume over the temporary files or delete the pilot
+source as part of this procedure.
+
+1. Stop GEMS with Ctrl+C and wait for worker shutdown. Stop every other writer
+   touching either tree. Back up the pilot and record source/destination paths.
+2. Have the administrator provision and verify the new 500 GB local store and
+   the restricted `/data/gems/config` and `/data/gems/data` directories. Confirm
+   their backing filesystem with `findmnt -T`, available capacity with `df -h`,
+   and read/write access for the intended operator/service account. Do not
+   create these paths on an unmounted mountpoint. Use empty destinations for
+   this migration; stop and reconcile any existing application state first.
+3. On dg-landing, copy both complete trees, including hidden files, markers,
+   settings, secrets, job history, and complete run groups. The following
+   commands assume the recommended `$HOME/gems-pilot` source and approved
+   `/data/gems` destination. Run the dry-runs first:
+
+   ```bash
+   rsync -anv "$HOME/gems-pilot/config/" /data/gems/config/
+   rsync -anv "$HOME/gems-pilot/data/" /data/gems/data/
+   ```
+
+   After reviewing the output, perform the copies:
+
+   ```bash
+   rsync -av "$HOME/gems-pilot/config/" /data/gems/config/
+   rsync -av "$HOME/gems-pilot/data/" /data/gems/data/
+   ```
+
+   Do not use `--delete`. Resolve any ownership/mode errors with the
+   administrator; do not ignore errors or broaden access to secrets.
+4. Before editing destination files, verify contents with checksum dry-runs:
+
+   ```bash
+   rsync -rnci "$HOME/gems-pilot/config/" /data/gems/config/
+   rsync -rnci "$HOME/gems-pilot/data/" /data/gems/data/
+   ```
+
+   Require zero exit status and no reported file changes. Also review file
+   inventory, permissions, and backup/restore; checksums alone do not establish
+   those properties or detect extra destination files.
+5. Set the three shell variables to the `/data` values in step 2. Edit the
+   **destination** environment file so both roots point to `/data/gems/...`.
+   Process variables override file values, so update them in every launch
+   shell and update any launcher or `GEMS_ENV_FILE` pointer. Verify restrictive
+   permissions on the copied environment file.
+6. Review saved settings, maps, and prepared manifests for absolute temporary
+   paths. Copying files does not rewrite embedded paths in settings, manifests,
+   or job history. Preserve historical records; translate actual filesystem
+   references in reviewed working copies, preserving metadata, IDs, and URLs.
+   Do not blanket-replace archival JSON or edit job history to force retries.
+   Select the new manifest/map/destination paths in the browser and submit new
+   jobs; old history may still display its original temporary paths.
+7. Run the step 4 initialization/check command against the destination roots.
+   Repeat the offline and browser smoke tests, then the step 8 acceptance
+   checks on the actual `/data` filesystem, including locking, interruption,
+   storage failure, permissions, and backup/restore. Keep the temporary source
+   until acceptance and backup review; do not run writers against both copies.
 
 ## 9. Continue development on Linux
 

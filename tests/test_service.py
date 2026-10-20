@@ -284,6 +284,16 @@ class ServiceTests(unittest.TestCase):
 
 
 class EntryPointTests(unittest.TestCase):
+    def setUp(self):
+        environment = patch.dict(os.environ, {
+            "GEMS_CONFIG_DIR": "",
+            "GEMS_DATA_DIR": "",
+            "GEMS_ENV_FILE": "",
+            "ALMA_API_KEY": "",
+        })
+        environment.start()
+        self.addCleanup(environment.stop)
+
     def test_headless_help_does_not_import_ui_or_flet(self):
         result = subprocess.run([sys.executable, "-c", """
 import sys
@@ -314,6 +324,8 @@ assert "gems.app" not in sys.modules
     def test_cli_headless_export_works_when_flet_import_is_blocked(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            env_file = root / "test.env"
+            env_file.write_text("")
             source = root / "manifest.json"
             source.write_text(json.dumps({"records": [{"identifier": "cli", "metadata": {"title": "No UI"}}]}))
             result = subprocess.run([sys.executable, "-c", """
@@ -321,7 +333,7 @@ import sys
 sys.modules["flet"] = None
 from gems.__main__ import cli
 raise SystemExit(cli())
-""", "--headless", "--source", str(source), "--output", str(root / "output")],
+""", "--env-file", str(env_file), "--headless", "--source", str(source), "--output", str(root / "output")],
                                     capture_output=True, text=True)
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertTrue((root / "output" / "collection_metadata.csv").is_file())
