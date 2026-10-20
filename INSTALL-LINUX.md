@@ -61,6 +61,7 @@ On the Mac, connect with `ssh dg-landing`, or open dg-landing through VS Code
 Remote - SSH. The following commands now run **on Linux**:
 
 ```bash
+export YOUR_LINUX_USER=sysadmin
 cat /etc/os-release
 uname -m
 python3 --version
@@ -69,6 +70,12 @@ df -h
 findmnt
 ss -ltn
 ```
+
+The examples use the Linux account `sysadmin`. Set `YOUR_LINUX_USER` once
+per shell as above; shell commands can then use `"$YOUR_LINUX_USER"` without
+replacing the account name each time. To retain it across interactive Bash
+sessions, use `nano ~/.bashrc` to add `export YOUR_LINUX_USER=sysadmin`.
+Storage paths below still use the logged-in account's actual `$HOME`.
 
 Require Python 3.11+ with its matching `venv` support, Git, CA certificates, and
 rsync for the transfer examples. Ask the administrator to install missing OS
@@ -205,13 +212,15 @@ export VISUAL=nano
 
 Open a new shell afterward, or run those two exports in the current shell.
 
-Example contents, replacing `YOUR_LINUX_USER` and the key. Use the actual
-absolute roots printed in step 2 if the Linux home is not `/home/YOUR_LINUX_USER`.
-Do not put literal `$HOME` or `~` in these environment-file values:
+Example contents for `sysadmin`, replacing the key. Use the actual absolute
+roots printed in step 2 if the Linux home is not `/home/sysadmin`.
+Keep these paths literal: exporting `YOUR_LINUX_USER` makes it available to
+shell commands, but does not expand variables in this environment file.
+Do not put literal `$YOUR_LINUX_USER`, `$HOME`, or `~` in these values:
 
 ```dotenv
-GEMS_CONFIG_DIR=/home/YOUR_LINUX_USER/gems-pilot/config
-GEMS_DATA_DIR=/home/YOUR_LINUX_USER/gems-pilot/data
+GEMS_CONFIG_DIR=/home/sysadmin/gems-pilot/config
+GEMS_DATA_DIR=/home/sysadmin/gems-pilot/data
 ALMA_API_REGION=America
 ALMA_API_KEY=replace-with-authorized-key
 ```

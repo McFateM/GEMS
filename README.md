@@ -135,6 +135,7 @@ On **dg-landing**, create and verify the pilot roots. Re-export these variables
 in each new Linux shell:
 
 ```bash
+export YOUR_LINUX_USER=sysadmin
 umask 077
 export GEMS_CONFIG_DIR="$HOME/gems-pilot/config"
 export GEMS_DATA_DIR="$HOME/gems-pilot/data"
@@ -151,14 +152,17 @@ chmod 600 "$GEMS_ENV_FILE"
 nano "$GEMS_ENV_FILE"
 ```
 
-Example private environment file, stored outside Git on protected storage.
-Replace `YOUR_LINUX_USER` with your Linux account, using the full absolute
-paths printed above if your home is elsewhere. Do not use literal `$HOME` or
-`~` in the file:
+Set `YOUR_LINUX_USER` once per shell, or add `export YOUR_LINUX_USER=sysadmin`
+to `~/.bashrc` using nano to retain it across interactive Bash sessions.
+
+Example private environment file for `sysadmin`, stored outside Git on
+protected storage. Use the full absolute paths printed above if your home is
+elsewhere. Shell variables are not expanded in this file; do not use literal
+`$YOUR_LINUX_USER`, `$HOME`, or `~`:
 
 ```dotenv
-GEMS_CONFIG_DIR=/home/YOUR_LINUX_USER/gems-pilot/config
-GEMS_DATA_DIR=/home/YOUR_LINUX_USER/gems-pilot/data
+GEMS_CONFIG_DIR=/home/sysadmin/gems-pilot/config
+GEMS_DATA_DIR=/home/sysadmin/gems-pilot/data
 ALMA_API_REGION=America
 ALMA_API_KEY=replace-with-authorized-key
 ```
