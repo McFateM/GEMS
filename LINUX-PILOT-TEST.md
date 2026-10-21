@@ -1,9 +1,19 @@
 # Linux Pilot Acceptance-Testing Guide
 
+Start with [GEMS on Linux: How the Pieces Fit Together](LINUX-WEB-OVERVIEW.md)
+if you need the terminal layout, normal startup sequence, or browser workflow.
+This guide covers testing, not the everyday operating overview.
+
 Use this guide on `dg-landing` after the offline and browser smoke tests pass.
 It covers every acceptance item in section 6, with automated components,
 manual procedures, evidence locations, and pass criteria. An automated PASS is
 not approval for production or a substitute for administrator sign-off.
+
+The live acceptance collection is **Social Justice at Grinnell**, collection
+PID **81310653130004641**, with **6 Alma records** in the previously verified
+manifest. Retrieve it fresh from Alma using section 2; do not use the migrated
+manifest as a substitute for the live-retrieval check. Six records does not
+necessarily mean six downloaded files or six CSV rows.
 
 ## Run the Automated Components
 
@@ -42,26 +52,16 @@ clashes, skipped entries, and injected storage failures. Those regression
 checks are not proof of your real metadata or actual mount-outage behavior.
 The runner never unmounts storage or kills your normal service.
 
-### Optional Live Retrieval
+### Live Collection Retrieval Uses the Browser
 
-After approval, add **2-3 real, distinct MMS IDs**:
+Run the automated command above **without `--mms-ids`**, then use sections 1-5
+to retrieve and export **Social Justice at Grinnell** through the normal web UI.
+The automated runner stays offline; the browser exercises the live collection.
+Keep credentials only in the private environment file or process environment.
 
-```bash
-# Replace these example numbers with your approved Alma MMS IDs.
-.venv/bin/python -m gems.pilot --env-file "$GEMS_ENV_FILE" \
-  --mms-ids '991111111111111111,992222222222222222'
-```
-
-This repeats the isolated checks, then retrieves only those IDs using the
-configured Alma credentials. It does **not** download live objects or judge
-metadata. Without `--mms-ids`, no live Alma calls are made. Keep credentials
-only in the private environment file or process environment.
-
-The live manifest path is in `live-result.json` and in the retrieval job JSON.
-It is inside the runner's isolated `data/` tree, which is also inside the
-normal service's data root. You can use that manifest directly in section 3,
-skipping a second retrieval in section 2. Do not alter its isolated job history
-or run two writers against the same manifest.
+The runner's optional `--mms-ids` mode is a separate 2-3-ID retrieval diagnostic,
+not the six-record collection test. It does not accept a collection title.
+You do not need that option for this procedure.
 
 ### Read the Automated Report
 
@@ -97,13 +97,16 @@ Evidence may contain collection metadata, local paths, and signed URLs in
 manifests. Keep it private; do not attach whole evidence trees to public issues.
 Backups increase disk usage, and live object downloads can be large.
 
-## 1. Prepare a Small, Approved Selection
+## 1. Prepare the Social Justice at Grinnell Test
 
-- Choose **2-3 real Alma MMS IDs**, preferably from one collection. Include a
-  single-file record and, if practical, a multi-file record.
-- To check MODS fallback, include a record with a known empty Alma field and a
-  matching legacy MODS file. Also identify a nonempty Alma field to verify it is
-  not overwritten. Note the expected values before testing.
+- Use the complete **Social Justice at Grinnell** collection, expected to
+  contain **6 Alma records**. Review the fresh manifest for single-file and
+  multi-file records and inspect both types if present.
+- To check MODS fallback, identify a collection record with a known empty Alma
+  field and a matching legacy MODS file. Also identify a nonempty Alma field to
+  verify it is not overwritten. Note the expected values before testing. If
+  this collection has no suitable example, leave that check pending rather
+  than claiming fallback was exercised.
 - Confirm the running service has an authorized `ALMA_API_KEY` and the correct
   `ALMA_API_REGION` from your private environment file. Never put the key in
   screenshots, logs, or pilot notes.
@@ -116,7 +119,7 @@ In a **second Linux terminal**, create a separate destination:
 umask 077
 export GEMS_CONFIG_DIR="$HOME/gems-pilot/config"
 export GEMS_DATA_DIR="$HOME/gems-pilot/data"
-PILOT_DIR=$(mktemp -d "$GEMS_DATA_DIR/pilot/mms-pilot-XXXXXXXX")
+PILOT_DIR=$(mktemp -d "$GEMS_DATA_DIR/pilot/social-justice-pilot-XXXXXXXX")
 printf 'Browser destination: %s\n' "$PILOT_DIR"
 ls -l "$GEMS_CONFIG_DIR/maps/alma-dc-to-grinnell.json"
 ```
@@ -125,26 +128,32 @@ Use your approved roots instead if different. Stop if the directory creation
 or map check fails. These commands assume storage was initialized and the map
 was copied during [Linux installation](INSTALL-LINUX.md).
 
-## 2. Retrieve Only the Selected MMS IDs
+## 2. Retrieve Social Justice at Grinnell From Alma
 
 In the browser's **Retrieve from Alma** section:
 
 | Field | Value |
 | --- | --- |
-| Alma Set ID or Collection Title | Blank |
-| MMS IDs (optional, comma-separated) | Your 2-3 approved MMS IDs, separated by commas |
+| Alma Set ID or Collection Title | `Social Justice at Grinnell` |
+| MMS IDs (optional, comma-separated) | **Blank: clear any remembered IDs** |
 | Destination (existing server directory inside GEMS_DATA_DIR) | The exact Linux path printed above |
 
 1. Click **1) Retrieve from Alma and Save JSON Manifest**.
 2. Wait for the job state to become **succeeded** (message **Completed**). Use **Refresh job log** to
    inspect the log.
-3. Confirm `records` and `available_records` match the number of distinct IDs
-   requested. Investigate any warnings or skipped records before proceeding.
+3. Confirm `records` is **6**, `available_records` is **6**, and there are no
+   unexplained warnings or skipped records. In the saved manifest, confirm
+   `collection_title` is `Social Justice at Grinnell` and
+   `alma_collection_pid` is `81310653130004641`. If counts differ, stop and
+   reconcile current Alma membership with the six-record baseline before
+   proceeding; do not silently accept a changed scope.
 4. Record the retrieval job ID and returned `manifest` path.
 5. Click **Use this retrieved manifest for step 2**.
 
-MMS IDs override the set/collection field. Retrieval fetches the **entire ID
-selection**; the start/limit controls below do not limit retrieval.
+MMS IDs override the set/collection field, so **MMS IDs must remain blank** for
+this test. A numeric selection is interpreted as an Alma **set** ID, not a
+collection PID: enter the collection **title**, not `81310653130004641`.
+Retrieval fetches all six records; start/limit below apply only to mapping.
 
 ## 3. Map and Download the First Record
 
@@ -213,9 +222,18 @@ cat "$GEMS_DATA_DIR/jobs/$JOB_ID.log"
 .venv/bin/python -m json.tool "$GEMS_DATA_DIR/jobs/$JOB_ID.json"
 ```
 
-The normal MMS retrieval layout is
-`<destination>/mms-ids-<hash>/<timestamp>/gems_mms-id-selection_<timestamp>.json`.
-Use the returned path, not a guessed hash or timestamp.
+The expected collection retrieval layout is:
+
+```text
+<destination>/
+  collection-social-justice-at-grinnell-81310653130004641/
+    <timestamp>/
+      gems_social-justice-at-grinnell_<timestamp>.json
+```
+
+Use the returned manifest path, not a guessed timestamp. Files already copied
+to `/data` or retained on the storage share are baselines only; this procedure
+creates a fresh run in the active temporary pilot and downloads its own files.
 
 ### Inspect Metadata and Files
 
@@ -271,10 +289,14 @@ Use the **same manifest**, map, MODS folder, and prefix throughout:
    cp "$RUN_DIR/collection_metadata.csv" "$REVIEW_DIR/after-record-1.csv"
    ```
 
-2. Set **Start record** to `2` and **Record limit** to `1`; export again.
-   Repeat with start `3` if you selected three records.
+2. Keep **Record limit** at `1`. Export **Start record** `2`, then `3`, `4`,
+   `5`, and `6`, waiting for each job to succeed before submitting the next.
+   Together with section 3's first export, this processes all six records.
 3. Inspect the cumulative CSV: earlier rows remain, new rows appear in manifest
    order, `objectid` values are unique, and child `parentid` links are correct.
+   The last batch must report `first_record: 6`, `last_record: 6`, and
+   `total_records: 6`. Check the merged CSV covers all six bibs and their
+   expected children; do not require exactly six CSV rows or six files.
 4. Save the merged CSV, then rerun start `1`, limit `1`:
 
    ```bash
@@ -300,8 +322,9 @@ No desktop, CLI, maintenance, or DART writer may modify this active output tree.
 
 Successful immediate downloads prove download access, not expired-link refresh.
 GEMS reuses existing object files, so merely repeating an export will not prove
-refresh. Retrieve the same approved IDs into a **new run**, but do not export
-it yet. Retain that manifest and wait until its signed links have expired
+refresh. Retrieve **Social Justice at Grinnell** again by title, with MMS IDs
+blank, into a **new run**; confirm six records, but do not export it yet.
+Retain that manifest and wait until its signed links have expired
 (typically about an hour). Then select that manifest and export start `1`,
 limit `1`, with the same map/MODS settings, without retrieving again. Confirm
 the previously absent object files download successfully and inspect the job

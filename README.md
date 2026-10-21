@@ -112,6 +112,8 @@ when the script creates a new environment; Python 3.11+ is required.
 
 For isolated Linux acceptance checks, run
 `.venv/bin/python -m gems.pilot --env-file "$GEMS_ENV_FILE"`.
+For the terminal layout and everyday browser workflow, read
+[GEMS on Linux: How the Pieces Fit Together](LINUX-WEB-OVERVIEW.md).
 See the [Linux Pilot Acceptance-Testing Guide](LINUX-PILOT-TEST.md) for setup,
 optional MMS-ID retrieval, retained evidence, and required manual checks.
 
