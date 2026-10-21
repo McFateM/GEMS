@@ -140,7 +140,11 @@ instead of starting duplicates.
 
 ### Firefox: Open the UI on the Mac
 
-Open <http://127.0.0.1:8550>.
+Copy this address and paste it into Firefox's address bar:
+
+```text
+http://127.0.0.1:8550
+```
 
 At the top of the GEMS page, confirm the displayed **Configuration** and
 **Data** paths point to `/home/sysadmin/gems-pilot/config` and
