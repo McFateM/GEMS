@@ -1,4 +1,4 @@
-# Installing and testing GEMS on dg-landing
+# Installing and Testing GEMS on dg-landing
 
 This runbook covers the `linux` branch: a private, single-operator Flet web
 service with durable jobs and local configuration/data under `$HOME/gems-pilot`
@@ -23,7 +23,7 @@ Use only small, approved pilot inputs until capacity and access controls permit
 more. The separate [migration section](#moving-the-pilot-to-the-new-data-store)
 covers moving to `/data` once it is provisioned and verified.
 
-## 1. Publish the branch from the Mac
+## 1. Publish the Branch from the Mac
 
 Review the work before publishing. Do not add credentials, collection data,
 logs, or virtual environments.
@@ -55,7 +55,7 @@ git rev-parse HEAD
 Keep that revision for comparison with the server. This does not merge to
 `main`. Subsequent development should use additional commits on `linux`.
 
-## 2. Confirm the Linux host and storage plan
+## 2. Confirm the Linux Host and Storage Plan
 
 On the Mac, connect with `ssh dg-landing`, or open dg-landing through VS Code
 Remote - SSH. The following commands now run **on Linux**:
@@ -99,7 +99,7 @@ Before using real collections, agree on:
   exceptions. One application process is supported; this is not a distributed
   multi-host worker system.
 
-### Configure the home-directory pilot roots
+### Configure the Home-Directory Pilot Roots
 
 GEMS does not require a separate volume or the literal path `/data`. It requires
 explicit, existing, writable configuration and data roots with initialized
@@ -148,7 +148,7 @@ not certify the eventual `/data` filesystem. Follow
 [Moving the pilot to the new /data store](#moving-the-pilot-to-the-new-data-store)
 when it becomes available, then repeat storage-specific acceptance tests.
 
-## 3. Install a fresh Linux checkout and environment
+## 3. Install a Fresh Linux Checkout and Environment
 
 Use a private development checkout first. Do not copy the Mac `.venv`.
 
@@ -173,6 +173,22 @@ Web installation includes Flet, so the UI unit tests can import it without
 installing the desktop runtime. For a CLI-only environment use `pip install -e .`;
 that environment does not support running the Flet-dependent tests.
 
+The web extra constrains FastAPI to `<0.145`: Flet 0.25.2 still passes the
+`openapi_prefix` argument removed in FastAPI 0.145. If web startup fails with
+`TypeError: FastAPI.__init__() got an unexpected keyword argument 'openapi_prefix'`,
+update the checkout as described above, then reinstall the web extra:
+
+```bash
+.venv/bin/python -m pip install -e '.[web]'
+.venv/bin/python -m pip check
+```
+
+For immediate recovery before updating the checkout, run
+`.venv/bin/python -m pip install 'fastapi<0.145'`, then `pip check` using the same
+virtual environment. Restart the foreground web command after installation.
+`pip check` alone cannot detect this API mismatch in older installations because
+Flet's own dependency metadata does not set a FastAPI upper bound.
+
 The unit tests do not require your pilot environment file or storage markers;
 those are created in step 4. If an older checkout's entry-point tests fail
 because they inherit `GEMS_CONFIG_DIR`, `GEMS_DATA_DIR`, or `GEMS_ENV_FILE`,
@@ -187,7 +203,7 @@ env -u GEMS_CONFIG_DIR -u GEMS_DATA_DIR -u GEMS_ENV_FILE \
 This leaves the pilot variables in your shell unchanged. Do not bypass
 application storage checks or create markers merely to satisfy unit tests.
 
-## 4. Configure secrets and initialize storage
+## 4. Configure Secrets and Initialize Storage
 
 On Linux, create the private environment file with an editor, not a command
 containing the real API key:
@@ -244,7 +260,7 @@ Normal web startup requires these markers and writable storage. No web-mode
 automatic fallback to the home directory, checkout, or another storage location
 is permitted. An explicitly configured home-directory pilot root is supported.
 
-## 5. Copy approved pilot inputs; do not delete the originals
+## 5. Copy Approved Pilot Inputs; Do Not Delete the Originals
 
 First stop all GEMS/DART/CLI/maintenance writers touching the source or
 destination. Take a backup/snapshot and record the migration date, source paths,
@@ -314,7 +330,74 @@ status must also be zero. This does not prove a backup is restorable or find
 extra destination files. Check inventory/counts/capacity and test restore
 separately. Keep the original copies until acceptance and backup review.
 
-### Translate paths without changing archival evidence
+### Copy Legacy MODS from the Mac's Mounted DGIngest Share
+
+Run these commands in a **local Mac terminal**, not a dg-landing or VS Code
+Remote - SSH terminal. The source share must already be mounted at
+`/Volumes/DGIngest`. These commands **copy**, not delete or move, source files.
+They preserve collection subdirectories and transfer only `*_MODS.xml` files,
+excluding originals, RDF, and other exports. Empty directories are omitted.
+
+Set the account and paths once, inspect the source, and create the Linux
+destination over SSH:
+
+```bash
+export YOUR_LINUX_USER=sysadmin
+export MODS_SOURCE="/Volumes/DGIngest/Migration-to-Alma/exports/"
+export MODS_DEST="${YOUR_LINUX_USER}@dg-landing:gems-pilot/data/legacy-mods/"
+
+ls -ld "$MODS_SOURCE"
+ssh "${YOUR_LINUX_USER}@dg-landing" \
+  'umask 077; mkdir -p "$HOME/gems-pilot/data/legacy-mods"'
+```
+
+Preview all matching MODS files without copying:
+
+```bash
+rsync -anvm --stats \
+  --include='*/' --include='*_MODS.xml' --exclude='*' \
+  "$MODS_SOURCE" "$MODS_DEST"
+```
+
+Review the file list and total size against the approved pilot scope and
+available Linux quota. This preview covers **all collections** under `exports`.
+For a Social Justice-only pilot, set the following instead before previewing,
+copying, and verifying; the matching destination subdirectory is required:
+
+```bash
+export MODS_SOURCE="/Volumes/DGIngest/Migration-to-Alma/exports/social-justice/"
+export MODS_DEST="${YOUR_LINUX_USER}@dg-landing:gems-pilot/data/legacy-mods/social-justice/"
+ssh "${YOUR_LINUX_USER}@dg-landing" \
+  'umask 077; mkdir -p "$HOME/gems-pilot/data/legacy-mods/social-justice"'
+```
+
+After reviewing a successful preview, perform the copy:
+
+```bash
+rsync -avm --stats \
+  --include='*/' --include='*_MODS.xml' --exclude='*' \
+  "$MODS_SOURCE" "$MODS_DEST"
+```
+
+Verify the copied MODS content with a checksum dry-run:
+
+```bash
+rsync -rncim \
+  --include='*/' --include='*_MODS.xml' --exclude='*' \
+  "$MODS_SOURCE" "$MODS_DEST"
+```
+
+Each rsync command must exit zero. The final command should print no file
+changes; investigate differences or errors before using the copy. It does not
+detect extra destination files or verify a backup. Do not add `--delete` or
+`--remove-source-files`; retain the source exports.
+
+In the Linux GEMS UI, set **Legacy MODS folder** to
+`/home/sysadmin/gems-pilot/data/legacy-mods` (or the actual absolute
+`$GEMS_DATA_DIR/legacy-mods` path). Use this root even for the Social Justice-only
+copy, so GEMS can find `social-justice/grinnell_<n>_MODS.xml`.
+
+### Translate Paths Without Changing Archival Evidence
 
 - Web and desktop settings are separate. Do **not** rename old `settings.json`
   to `web-settings.json`: they use different field names. Enter browser paths
@@ -339,11 +422,18 @@ The web service trusts approved operators and prepared manifests, including
 embedded local-file references and download URLs. It is not an untrusted-upload
 sandbox. Outputs are written beside the chosen manifest.
 
-## 6. Prove an offline export under $HOME/gems-pilot
+## 6. Prove an Offline Export Under $HOME/gems-pilot
 
-On Linux, from the checkout, run this with the storage variables from step 2:
+On Linux, from the checkout, restore the pilot variables from step 2 in the
+current terminal before running the test. Shell exports do not survive a new
+terminal or SSH session. These paths match the home-directory pilot; use your
+approved paths instead if they differ:
 
 ```bash
+export GEMS_CONFIG_DIR="$HOME/gems-pilot/config"
+export GEMS_DATA_DIR="$HOME/gems-pilot/data"
+export GEMS_ENV_FILE="$GEMS_CONFIG_DIR/gems.env"
+
 .venv/bin/python - <<'PY'
 import csv
 import json
@@ -370,11 +460,16 @@ print("PASS. Pilot manifest for browser testing:", manifest)
 PY
 ```
 
+`KeyError: 'GEMS_DATA_DIR'` means the variable was not exported in the terminal
+running Python. The snippet reads the process environment directly; importing
+`process_export` does not load `gems.env`. Setting variables in that file or in
+another terminal does not export them into this shell.
+
 Keep the printed path for the next step. The disposable smoke directory is
 intentionally retained for inspection. Delete only that named directory later,
 after checking it contains no real collection data.
 
-## 7. Launch the browser service through SSH
+## 7. Launch the Browser Service Through SSH
 
 In a Linux terminal, from the checkout:
 
@@ -411,7 +506,11 @@ retrieval. Retrieval always fetches the entire selection; start/limit apply
 only to mapping. Start with a record limit of 1 and inspect all output before
 testing larger batches.
 
-## 8. Pilot acceptance checklist
+For the isolated acceptance runner, small MMS-ID test, evidence locations,
+pass criteria, and full operational procedures, see the
+[Linux Pilot Acceptance-Testing Guide](LINUX-PILOT-TEST.md).
+
+## 8. Pilot Acceptance Checklist
 
 - [ ] Record Linux OS/architecture, Python version, Git revision, and package
   versions (`.venv/bin/python -m pip freeze`); tests and `pip check` pass.
@@ -443,7 +542,7 @@ tree. These other tools do not participate in the web service lock.
 Pilot acceptance does not certify future storage or authorize production data.
 Repeat these checks after migration before approving production use.
 
-## Moving the pilot to the new /data store
+## Moving the Pilot to the New /data Store
 
 This is a future cutover procedure, not a prerequisite for the pilot. The
 requested 500 GB is shared by GEMS and DART, not 500 GB per application; agree on
@@ -533,7 +632,7 @@ part of this procedure. All commands in this section run **on dg-landing**.
    backup/restore. Keep the pilot source until acceptance and backup review;
    do not run writers against both copies.
 
-## 9. Continue development on Linux
+## 9. Continue Development on Linux
 
 In VS Code Remote - SSH, open `~/GitHub/GEMS`, select
 `.venv/bin/python`, and stay on `linux`. Edit and test there, or push changes
@@ -564,7 +663,7 @@ Keep the [service tests](tests/test_service.py) and existing desktop/pipeline
 tests passing, and verify desktop behavior on the Mac before merging to `main`.
 DART is a separate follow-up; do not migrate its state implicitly with GEMS.
 
-## 10. Future managed hosting after /data migration and acceptance
+## 10. Future Managed Hosting After /data Migration and Acceptance
 
 For the current home-directory pilot, keep using the foreground launch and
 SSH tunnel in step 7. The managed-service template deliberately blocks home

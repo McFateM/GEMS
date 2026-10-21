@@ -15,7 +15,7 @@ dependencies = [
 
 [project.optional-dependencies]
 desktop = ["flet==0.25.2", "flet-desktop==0.25.2"]
-web = ["flet==0.25.2", "flet-web==0.25.2"]
+web = ["flet==0.25.2", "flet-web==0.25.2", "fastapi<0.145"]
 
 [tool.setuptools.packages.find]
 include = ["gems*"]

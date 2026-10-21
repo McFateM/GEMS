@@ -104,9 +104,16 @@ when setting up another mode or after changing dependencies:
 `python_requirements.txt` remains the desktop installation entry point.
 Packaging separates the core pipeline (`pip install -e .`), desktop
 (`pip install -e '.[desktop]'`), and web (`pip install -e '.[web]'`) runtimes.
+The web extra requires FastAPI `<0.145` because Flet 0.25.2 uses the
+`openapi_prefix` constructor argument removed in FastAPI 0.145.
 The headless CLI does not import Flet. To run with an existing environment,
 use `python -m gems` with the same switches. `GEMS_PYTHON` selects the interpreter
 when the script creates a new environment; Python 3.11+ is required.
+
+For isolated Linux acceptance checks, run
+`.venv/bin/python -m gems.pilot --env-file "$GEMS_ENV_FILE"`.
+See the [Linux Pilot Acceptance-Testing Guide](LINUX-PILOT-TEST.md) for setup,
+optional MMS-ID retrieval, retained evidence, and required manual checks.
 
 The status strip at the bottom shows progress, results, and errors for retrieval and export. Use its copy button to copy the current status message. Its activity-log button reads the current run's `gems.log` after a manifest is saved; startup and pre-run messages remain in `~/.GEMS-data/logfiles/gems.log`.
 
