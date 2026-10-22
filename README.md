@@ -522,8 +522,8 @@ After updating the dg-landing checkout to `main` as described above, run:
 cd ~/GitHub/GEMS
 bash scripts/retrieve_collections.sh \
   /path/to/collection-titles.txt \
-  "$HOME/gems-pilot/data" \
-  "$HOME/gems-pilot/config/gems.env"
+  /data/gems/data \
+  /data/gems/config/gems.env
 ```
 
 The third argument is optional if `GEMS_ENV_FILE` is exported or the checkout's
@@ -540,6 +540,21 @@ failed line/title and completed count, and preserves the failing exit status.
 Earlier manifests remain intact; retry with a list containing only the remaining
 titles to avoid retrieving successful collections again. An empty list is an
 error. It never runs button 2 automatically. Use `tmux` for long batches.
+
+Each batch also creates a private, uniquely named
+`button-2-commands-<UTC-timestamp>-<unique>` Bash script in the output directory.
+Its path is printed at startup and on completion or retrieval failure. Each
+successful collection's shell-quoted button 2 command is appended immediately,
+with its collection title as a comment. Commands already saved survive a later
+failure, and a new batch never overwrites an earlier command file. Failed
+collections are not included.
+
+Review the saved file and copy individual commands when ready. Alternatively,
+after reviewing all commands and adding any desired field-map or batching
+options, run the file with `bash /data/gems/data/button-2-commands-...`.
+That explicitly starts button 2 exports sequentially and stops on the first
+export failure. Rerunning the file repeats its exports; it does not track which
+button 2 commands have already completed.
 
 #### Button 2: map an existing manifest and download its objects
 

@@ -4,6 +4,7 @@ set -euo pipefail
 usage() {
   printf 'Usage: %s TITLES_FILE OUTPUT_DIRECTORY [ENV_FILE]\n' "$0"
   printf 'Retrieve each collection title (one per line); stop at the first failure.\n'
+  printf 'Save successful button 2 commands in a new file under OUTPUT_DIRECTORY.\n'
 }
 
 if [[ "${1:-}" == --help ]]; then
@@ -49,6 +50,13 @@ output=$(cd "$output" && pwd)
 exec 3< "$titles_file"
 cd "$repo"
 
+umask 077
+commands_file=$(mktemp "$output/button-2-commands-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")
+printf '#!/usr/bin/env bash\nset -euo pipefail\n# Review commands before running; these export all retrieved records.\n' > "$commands_file"
+printf 'Button 2 commands will be saved to: %s\n' "$commands_file"
+retrieval_output=$(mktemp)
+trap 'rm -f "$retrieval_output"' EXIT
+
 completed=0
 line=0
 while IFS= read -r title <&3 || [[ -n "$title" ]]; do
@@ -60,12 +68,20 @@ while IFS= read -r title <&3 || [[ -n "$title" ]]; do
   fi
   printf '\nRetrieving collection (line %s): %s\n' "$line" "$title"
   if "$python" "${args[@]}" \
-      --collection-title="$title" --output "$output" </dev/null; then
+      --collection-title="$title" --output "$output" </dev/null | tee "$retrieval_output"; then
+    command=$(tail -n 1 "$retrieval_output")
+    if [[ "$command" != *" -m gems --headless --source "* ]]; then
+      printf 'No button 2 command found for %s; stopping. Previous commands: %s\n' \
+        "$title" "$commands_file" >&2
+      exit 2
+    fi
+    printf '\n# Collection: %s\n%s\n' "$title" "$command" >> "$commands_file"
     completed=$((completed + 1))
   else
     status=$?
     printf 'Stopped at line %s: %s (exit %s). Completed %s collection(s).\n' \
       "$line" "$title" "$status" "$completed" >&2
+    printf 'Saved button 2 commands: %s\n' "$commands_file" >&2
     exit "$status"
   fi
 done
@@ -76,3 +92,4 @@ if [[ "$completed" == 0 ]]; then
   exit 2
 fi
 printf '\nCompleted button 1 for %s collection(s). No button 2 exports were started.\n' "$completed"
+printf 'Saved button 2 commands: %s\n' "$commands_file"

@@ -28,7 +28,10 @@ class RetrieveCollectionsTests(unittest.TestCase):
             'printf "Button 2 follow-up command\\n"\n'
             'for arg in "$@"; do\n'
             '  if [[ "$arg" == "--collection-title=Fail" ]]; then exit 7; fi\n'
-            'done\n',
+            'done\n'
+            'if [[ "${OMIT_COMMAND:-}" != 1 ]]; then\n'
+            '  printf "%s\\n" "/fake/python -m gems --headless --source \'manifest file.json\' --output \'run folder\'"\n'
+            'fi\n',
         )
         python.chmod(0o755)
         self.output = self.root / "output's folder"
@@ -49,6 +52,11 @@ class RetrieveCollectionsTests(unittest.TestCase):
             return []
         return [part.decode().split("\0") for part in self.log.read_bytes().split(b"\0\0") if part]
 
+    def saved_commands(self):
+        files = list(self.output.glob("button-2-commands-*"))
+        self.assertEqual(1, len(files))
+        return files[0], files[0].read_text()
+
     def test_titles_are_literal_trimmed_and_support_crlf_and_no_final_newline(self):
         titles = ["Social Justice at Grinnell", "Women's history", 'Title "quoted" #1',
                   r"Back\slash; $(touch SHOULD_NOT_EXIST)", "--title"]
@@ -65,6 +73,14 @@ class RetrieveCollectionsTests(unittest.TestCase):
         self.assertFalse((self.repo / "SHOULD_NOT_EXIST").exists())
         self.assertEqual(len(titles), result.stdout.count("Button 2 follow-up command"))
         self.assertIn("Completed button 1 for 5 collection(s)", result.stdout)
+        path, saved = self.saved_commands()
+        self.assertEqual(5, saved.count("/fake/python -m gems --headless"))
+        for title in titles:
+            self.assertIn(f"# Collection: {title}\n", saved)
+        self.assertIn(str(path), result.stdout)
+        self.assertEqual(0, path.stat().st_mode & 0o077)
+        syntax = subprocess.run(["bash", "-n", str(path)], capture_output=True, text=True)
+        self.assertEqual(0, syntax.returncode, syntax.stderr)
 
     def test_failure_stops_immediately_and_preserves_exit_status(self):
         self.titles.write_text("First\nFail\nNever run\n")
@@ -74,6 +90,30 @@ class RetrieveCollectionsTests(unittest.TestCase):
         self.assertIn("Stopped at line 2: Fail", result.stderr)
         self.assertIn("Completed 1 collection(s)", result.stderr)
         self.assertNotIn("Never run", result.stdout)
+        path, saved = self.saved_commands()
+        self.assertIn("# Collection: First\n", saved)
+        self.assertNotIn("# Collection: Fail", saved)
+        self.assertEqual(1, saved.count("/fake/python -m gems --headless"))
+        self.assertIn(str(path), result.stderr)
+
+    def test_repeated_batches_keep_separate_command_files(self):
+        self.titles.write_text("First\n")
+        for _ in range(2):
+            result = self.run_script(self.titles, self.output)
+            self.assertEqual(0, result.returncode, result.stderr)
+        files = list(self.output.glob("button-2-commands-*"))
+        self.assertEqual(2, len(files))
+        self.assertTrue(all(path.read_text().count("/fake/python -m gems --headless") == 1 for path in files))
+
+    def test_missing_followup_command_stops_with_explicit_error(self):
+        self.titles.write_text("First\nNever run\n")
+        self.environment["OMIT_COMMAND"] = "1"
+        result = self.run_script(self.titles, self.output)
+        self.assertEqual(2, result.returncode)
+        self.assertEqual(1, len(self.calls()))
+        self.assertIn("No button 2 command found", result.stderr)
+        _, saved = self.saved_commands()
+        self.assertNotIn("# Collection: First", saved)
 
     def test_relative_paths_and_environment_file_precedence(self):
         self.titles.write_text("Title\n")
