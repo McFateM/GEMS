@@ -5,13 +5,14 @@ import json
 import os
 
 from .alma import AlmaClient
-from .app import launch
 from .pipeline import process_export
 
 
 def cli() -> int:
     parser = argparse.ArgumentParser(description="GEMS: Gather, Export, Map, Serialize")
-    parser.add_argument("--source", help="Path to an Alma Digital / Specto export (.json or .csv)")
+    parser.add_argument("--source", help="Path to an Alma / Specto manifest or Omeka JSON export")
+    parser.add_argument("--source-type", choices=("alma", "omeka"), default="alma",
+                        help="Input adapter: alma (existing manifest workflow) or omeka (Classic or S JSON)")
     parser.add_argument("--output", help="Directory for exported objects and collection_metadata.csv")
     parser.add_argument(
         "--field-map",
@@ -31,21 +32,29 @@ def cli() -> int:
     if args.source or args.output or args.headless:
         if not args.source or not args.output:
             parser.error("--source and --output are required in headless mode")
-        result = process_export(
-            args.source,
-            args.output,
-            field_map=json.loads(args.field_map),
-            source_system=args.source_system,
-            legacy_mods_dir=args.legacy_mods,
-            start=args.start,
-            limit=args.limit,
-            refresh_source=AlmaClient().refresh_file_link if os.getenv("ALMA_API_KEY") else None,
-        )
+        try:
+            result = process_export(
+                args.source,
+                args.output,
+                field_map=json.loads(args.field_map),
+                source_system=args.source_system,
+                source_type=args.source_type,
+                legacy_mods_dir=args.legacy_mods,
+                start=args.start,
+                limit=args.limit,
+                refresh_source=AlmaClient().refresh_file_link if args.source_type == "alma" and os.getenv("ALMA_API_KEY") else None,
+            )
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
         print(
             f"Exported {result.row_count} row(s), {result.file_count} file(s), "
             f"CSV: {result.csv_path}, JSON: {result.json_path}"
         )
+        if result.skipped_records:
+            print(f"Skipped {len(result.skipped_records)} item(s) without media: {', '.join(result.skipped_records)}")
         return 0
+
+    from .app import launch
 
     launch()
     return 0

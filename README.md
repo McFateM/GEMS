@@ -9,6 +9,7 @@ GEMS: Gather, Export, Map, Serialize.
 
 This repository now contains a small Flet-based application and headless pipeline for:
 - loading Alma Digital / Specto exports from JSON or CSV,
+- importing Omeka Classic or Omeka S JSON exports for DART,
 - extracting digital-object identifiers, files, and structured metadata,
 - mapping source metadata into CollectionBuilder-oriented fields, and
 - writing a `collection_metadata.csv` plus exported objects and normalized JSON.
@@ -28,6 +29,93 @@ In the **Map Manifest to CSV** section, **Start record** (1-based, default 1) an
 Before using button 1, set **Destination folder** in the Retrieve from Alma section to an existing parent folder such as `/Volumes/DGIngest/.GEMS-data`. The folder is remembered and checked before GEMS contacts Alma. **1) Retrieve from Alma and Save JSON Manifest** retrieves the records and immediately saves them. It creates a persistent `collection-<title>-<pid>/`, `set-<title>-<id>/`, or `mms-ids-<hash>/` folder in the destination. If the destination can't be written when retrieval finishes, the manifest is saved under `~/.GEMS-data/unsaved-manifests/` instead. Each run gets its own readable local-time subdirectory, such as `2026-09-30_11-52-42_CDT/`, containing the manifest and `gems.log`. The manifest includes `collection_title`, local-time `created_at` (ISO 8601 with UTC offset), the retrieval's `available_records` count, optional `alma_set_id` or `alma_collection_pid`, and the retrieved `records` array. GEMS selects the new manifest automatically. In the **Map Manifest to CSV** section, optionally choose a JSON field map, then use **2) Map and Export Manifest to CSV** to write `collection_metadata.csv`, `normalized_records.json`, and `objects/` into the folder containing the manifest. Run button 2 again with the next **Start record** to map the next batch into the same CSV. Each use of button 1 creates a new manifest and timestamped run under the destination folder. Existing runs remain intact.
 
 ## Import a prepared manifest
+
+### Import Omeka JSON for DART
+
+Select **Omeka Classic / Omeka S JSON export** in **Input source** under
+**Map Manifest to CSV**. Choose the JSON export, enter an **Omeka output folder**,
+and use button 2. Omeka does not require Alma credentials or an Alma retrieval.
+The selected source and Omeka destination are remembered. The existing Alma
+retrieval and export behavior is unchanged; selecting a newly retrieved Alma
+manifest switches the source back to Alma.
+
+Headless equivalent, from the repository root using GEMS's virtual environment
+(created by `./run.sh`):
+
+```bash
+.venv/bin/python -m gems --headless --source-type omeka \
+  --source /path/to/omeka-export.json --output /path/to/fresh-output
+```
+
+Use `.venv/bin/python` rather than the system `python3`, which may not have
+GEMS's dependencies installed. Alternatively, activate the environment with
+`source .venv/bin/activate` before using `python -m gems`.
+
+Accepted input is a single item, an array of items, or an object containing an
+`items`, `records`, or `data` array:
+
+- **Classic:** Dublin Core `element_texts`, with each entry's `element.name`
+  and `text`; embedded file objects in `files_list` (or a `files` array).
+  Files use `file_urls.original`, falling back to `file_urls.fullsize`.
+- **S:** JSON-LD `dcterms:*` / `dc:*` value arrays (`@value` or URI `@id`)
+  and embedded `o:media` objects containing `o:original_url`. Filenames come
+  from `o:filename`, a filename-like `o:source`, or the download URL.
+
+Omeka S exports may contain only `@id` media API references in `o:media`.
+During export, GEMS automatically reads each referenced HTTP(S) API resource
+and uses its `o:original_url` and filename metadata. Resolution reports progress,
+checks cancellation between requests, uses a 30-second request timeout, and
+retries transient failures up to three times. Repeated references are fetched
+once per run. The JSON input is not modified, and the UI range preview stays
+offline. Resolution currently covers all items before batch selection so naming
+remains stable across batches.
+
+Classic file listing links still need to be expanded into `files_list` before
+importing. Media APIs and asset URLs must be accessible without interactive
+authentication. API errors, invalid responses, and non-file media without an
+original URL stop the export with item/media context; API JSON is never saved
+as an asset.
+Local `file://` asset URLs are also supported.
+Representative, documented-shape fixtures are in
+[tests/fixtures/omeka](tests/fixtures/omeka/README.md).
+
+Omeka normalizes into GEMS's existing metadata/file model and uses the shared
+template mapper, download code, filename rules, per-object folders, progress,
+cancellation, and CSV/JSON writers:
+
+- Output contains `objects/<object-folder>/<asset-name>`,
+  `collection_metadata.csv`, and `normalized_records.json`.
+- Every physical media file has one row, repeating the item's metadata.
+  `original_file_name` and `filename` exactly match the final on-disk basename,
+  including sanitization, sequence numbering, and conflict suffixes.
+- Canonical fields such as `title`, `creator`, `description`, `subject`, and
+  `date` are unprefixed. Repeated values use `; `, following GEMS conventions.
+  Omeka IDs appear only in `originating_system_id`; `source_system` and
+  `source_record_url` retain provenance. They are not DART IDs.
+- Omeka exports never assign `objectid` / `parentid`, create structural rows,
+  or convert transcript assets. DART determines structure later from the files.
+- Items with no media are skipped with an activity-log warning and an explicit
+  completion notice; no fake file or metadata-only row is created.
+- A missing media URL, unsupported structure, malformed JSON, download failure,
+  or write failure stops the export with an error. Metadata is not published
+  for a failed download. Completed assets may remain after failure/cancellation;
+  incomplete downloads are removed. Rerunning downloads selected assets again.
+
+An optional simple field map follows the existing canonical-field-to-source-name
+syntax. Existing template maps also work: Omeka applies their item-level rules
+to every physical file, omits ID columns, and forces `original_file_name` to the
+actual basename. It does not apply Alma child-row rules or legacy MODS fallbacks.
+The default mapping needs no field map and uses canonical unprefixed columns.
+
+**Start record** and **Record limit** retain their existing 1-based meanings.
+Naming is planned across the entire input before selecting a batch, keeping
+filenames stable. Subsequent batches merge by `original_file_name` in input
+order. Use a fresh output directory for a different export or mapping; GEMS
+rejects incompatible existing CSV columns or unrelated assets before downloading.
+Do not edit source identities or media filenames between batches.
+
+The asset-only contract above applies to the new Omeka adapter. The existing
+Alma template workflow, including its legacy structural rows, is preserved.
 
 ### Audit an Alma XML record's CSV mapping
 
