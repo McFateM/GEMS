@@ -495,6 +495,9 @@ hyphens (for example, `Social Justice at Grinnell` becomes
 does not truncate the title to the shorter run-folder name. Batch command files
 save this option too. Previously retrieved manifests and previously saved
 commands are not modified.
+Newly generated button 2 commands also include
+`--field-map-file /path/to/GEMS/maps/alma-dc-to-grinnell.json`, selecting the
+Grinnell template explicitly. Keep that option when running or editing them.
 The command exports all retrieved records by default; add `--start` and `--limit`
 to batch the export, or add your field map and other mapping options before running
 it. An explicit `--env-file` or `GEMS_ENV_FILE` is carried forward as `--env-file`.
@@ -626,6 +629,18 @@ In the Linux browser UI, choose **Omeka Classic / Omeka S JSON export** under
 `GEMS_DATA_DIR`. Alma-only prefix and legacy-MODS controls are disabled.
 
 ### Optional field mapping
+
+For the Grinnell workflow, always select the supplied template explicitly:
+
+```bash
+.venv/bin/python -m gems --headless \
+  --source /path/to/manifest.json --output /path/to/output \
+  --field-map-file maps/alma-dc-to-grinnell.json
+```
+
+`--field-map-file` reads JSON from a file and cannot be combined with the inline
+`--field-map` option. Omitting both still selects the older basic export; an
+ObjectID prefix alone does not select the Grinnell template.
 
 Pass a JSON object that maps CollectionBuilder fields to source field names:
 

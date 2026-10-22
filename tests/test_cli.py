@@ -56,6 +56,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(str(manifests[0].parent.resolve()), command[command.index("--output") + 1])
         self.assertNotIn("--retrieve", command)
         self.assertNotIn("--limit", command)
+        self.assertEqual(str(Path(__file__).parents[1] / "maps/alma-dc-to-grinnell.json"),
+                         command[command.index("--field-map-file") + 1])
         return manifests[0], json.loads(manifests[0].read_text())
 
     def test_set_retrieves_all_unique_members_and_saves_manifest_only(self):
@@ -255,15 +257,33 @@ class CliTests(unittest.TestCase):
         original.write_text("Alma asset bytes\n")
         self.client.fetch_records.side_effect = None
         self.client.fetch_records.return_value = [{
-            "identifier": "991", "metadata": {"title": "Retrieved title"},
+            "identifier": "991", "metadata": {"dc:title": "Retrieved title"},
             "files": [{"path": str(original), "filename": "sample.txt"}],
         }]
         manifest, _ = self.retrieve("--mms-ids", "991")
         command = shlex.split(self.stdout.getvalue().splitlines()[-1])
         completed = subprocess.run(command, capture_output=True, text=True, timeout=30)
         self.assertEqual(0, completed.returncode, completed.stderr)
-        self.assertEqual(original.read_bytes(), (manifest.parent / "objects" / "sample.txt").read_bytes())
+        self.assertEqual(original.read_bytes(), (manifest.parent / "objects" / "sample" / "sample.txt").read_bytes())
         self.assertIn("Retrieved title", (manifest.parent / "collection_metadata.csv").read_text())
+        self.assertEqual(
+            json.loads((Path(__file__).parents[1] / "maps/alma-dc-to-grinnell.json").read_text())["columns"],
+            (manifest.parent / "collection_metadata.csv").read_text().splitlines()[0].split(","),
+        )
+
+    def test_field_map_file_errors_and_conflicting_mapping_options(self):
+        source = self.root / "manifest.json"
+        source.write_text('{"records": []}')
+        malformed = self.root / "malformed.json"
+        malformed.write_text("{bad")
+        for options in (
+            ["--field-map-file", str(self.root / "missing.json")],
+            ["--field-map-file", str(malformed)],
+            ["--field-map-file", str(malformed), "--field-map", "{}"],
+        ):
+            with self.subTest(options=options), self.assertRaises(SystemExit) as exc:
+                self.run_cli("--headless", "--source", str(source), "--output", str(self.root), *options)
+            self.assertEqual(2, exc.exception.code)
 
     def test_retrieval_imports_no_flet(self):
         script = """

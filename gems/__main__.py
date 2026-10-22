@@ -27,11 +27,13 @@ def cli() -> int:
     selection.add_argument("--collection-title", help="Exact Alma collection title to retrieve")
     selection.add_argument("--mms-ids", help="Comma-separated or newline-separated Alma MMS IDs to retrieve")
     parser.add_argument("--collection-id", help="Collection PID; requires --collection-title as a label and bypasses title search")
-    parser.add_argument(
+    mapping = parser.add_mutually_exclusive_group()
+    mapping.add_argument(
         "--field-map",
         default="{}",
         help="JSON mapping of CollectionBuilder fields to source metadata fields",
     )
+    mapping.add_argument("--field-map-file", help="Path to a JSON field map, such as maps/alma-dc-to-grinnell.json")
     parser.add_argument("--source-system", default="alma_digital", help="Label stored in the output CSV")
     parser.add_argument(
         "--legacy-mods",
@@ -74,7 +76,8 @@ def cli() -> int:
                 parser.error("--retrieve cannot be combined with --source or --source-type omeka")
             if not args.output:
                 parser.error("--output is required with --retrieve")
-            if args.start != 1 or args.limit is not None or args.field_map != "{}" or args.legacy_mods or args.objectid_prefix:
+            if (args.start != 1 or args.limit is not None or args.field_map != "{}" or args.field_map_file
+                    or args.legacy_mods or args.objectid_prefix):
                 parser.error("Mapping options apply to button 2 only; --retrieve always retrieves the whole selection")
             if args.set_id is not None and not args.set_id.isdecimal():
                 parser.error("--set-id must be numeric")
@@ -105,6 +108,7 @@ def cli() -> int:
                 sys.executable, "-m", "gems", "--headless",
                 "--source", str(manifest), "--output", str(manifest.parent),
                 "--objectid-prefix", slugify(retrieval_result["collection_title"]),
+                "--field-map-file", str(Path(__file__).resolve().parent.parent / "maps" / "alma-dc-to-grinnell.json"),
             ]
             env_file = args.env_file or os.getenv("GEMS_ENV_FILE")
             if env_file:
@@ -118,7 +122,8 @@ def cli() -> int:
             result = process_export(
                 args.source,
                 args.output,
-                field_map=json.loads(args.field_map),
+                field_map=json.loads(Path(args.field_map_file).expanduser().read_text(encoding="utf-8"))
+                if args.field_map_file else json.loads(args.field_map),
                 source_system=args.source_system,
                 source_type=args.source_type,
                 legacy_mods_dir=args.legacy_mods,
