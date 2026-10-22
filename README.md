@@ -512,6 +512,42 @@ name; a partial match is never selected automatically.
 
 #### Button 1 for a list of collection titles
 
+**Recommended: retrieve directly by collection PID**, avoiding Alma's title
+query parser entirely. [collections.tsv](collections.tsv) contains the current
+40-title list with two tab-separated columns: **collection PID first, title
+second**, without a header. IDs were taken from Alma's collection editor, not
+guessed from titles. They are collection PIDs, not set IDs or bibliographic
+MMS IDs.
+
+```bash
+cd ~/GitHub/GEMS
+bash scripts/retrieve_collections.sh --ids \
+  collections.tsv /data/gems/data /data/gems/config/gems.env
+```
+
+In `--ids` mode, the title is only a supplied label for the manifest, directory,
+and button 2 ObjectID prefix. GEMS requests collection members by PID and never
+searches or resolves that title. Keep the labels paired with the correct IDs;
+GEMS does not validate their names through the collections API. Use a literal
+tab between the two columns, not commas or spaces. Blank lines and CRLF files
+are supported; malformed rows stop the batch with a line-numbered error.
+The same fail-fast and saved-button-2-command behavior described below applies.
+This does not change Alma suppression or publication settings.
+
+To retrieve one collection directly:
+
+```bash
+.venv/bin/python -m gems --headless --retrieve \
+  --collection-id 81310703090004641 \
+  --collection-title 'Scarlet & Black (S&B) Archives' \
+  --output /data/gems/data --env-file /data/gems/config/gems.env
+```
+
+`--collection-id` requires `--collection-title` as the output label. Without
+`--collection-id`, the title-only commands below retain their existing behavior.
+For a partial restart, make a TSV with only the rows still needed; the batch
+does not automatically skip previously retrieved collections.
+
 Use [scripts/retrieve_collections.sh](scripts/retrieve_collections.sh), included
 in `main`, to run headless button 1 against a list without starting button 2.
 

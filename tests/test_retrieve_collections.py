@@ -115,6 +115,45 @@ class RetrieveCollectionsTests(unittest.TestCase):
         _, saved = self.saved_commands()
         self.assertNotIn("# Collection: First", saved)
 
+    def test_id_mode_passes_pids_and_literal_titles_and_keeps_saved_commands(self):
+        self.titles.write_bytes(
+            b"81310703090004641\tScarlet & Black (S&B) Archives\r\n"
+            b"81310652990004641\tSyllabi and Curricular Materials",
+        )
+        result = self.run_script("--ids", self.titles, self.output)
+        self.assertEqual(0, result.returncode, result.stderr)
+        calls = self.calls()
+        self.assertEqual(2, len(calls))
+        for call, pid, title in zip(calls, ("81310703090004641", "81310652990004641"),
+                                    ("Scarlet & Black (S&B) Archives", "Syllabi and Curricular Materials")):
+            self.assertEqual(pid, call[call.index("--collection-id") + 1])
+            self.assertIn(f"--collection-title={title}", call)
+        _, saved = self.saved_commands()
+        self.assertEqual(2, saved.count("/fake/python -m gems --headless"))
+        self.assertIn("# Collection: Scarlet & Black (S&B) Archives", saved)
+
+    def test_id_mode_rejects_bad_rows_and_still_stops_on_retrieval_failure(self):
+        for text in ("No tab", "abc\tTitle", "123\t", "\tNo ID", "123\tTitle\tExtra",
+                     "collection_id\ttitle"):
+            with self.subTest(text=text):
+                self.titles.write_text(text)
+                result = self.run_script("--ids", self.titles, self.output)
+                self.assertEqual(2, result.returncode)
+                self.assertIn("line 1", result.stderr)
+        self.assertEqual([], self.calls())
+        self.titles.write_text("123\tFirst\n456\tFail\n789\tNever run\n")
+        result = self.run_script("--ids", self.titles, self.output)
+        self.assertEqual(7, result.returncode)
+        self.assertEqual(2, len(self.calls()))
+        self.assertNotIn("Never run", result.stdout)
+
+    def test_supplied_pid_list_matches_current_titles_and_verified_browser_rows(self):
+        root = Path(__file__).parents[1]
+        rows = [line.split("\t") for line in (root / "collections.tsv").read_text().splitlines()]
+        self.assertTrue(all(len(row) == 2 and row[0].isascii() and row[0].isdecimal() for row in rows))
+        self.assertEqual(len(rows), len({row[0] for row in rows}))
+        self.assertEqual((root / "collection-titles.txt").read_text().splitlines(), [row[1] for row in rows])
+
     def test_relative_paths_and_environment_file_precedence(self):
         self.titles.write_text("Title\n")
         inherited = self.root / "inherited.env"

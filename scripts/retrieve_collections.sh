@@ -3,6 +3,8 @@ set -euo pipefail
 
 usage() {
   printf 'Usage: %s TITLES_FILE OUTPUT_DIRECTORY [ENV_FILE]\n' "$0"
+  printf '       %s --ids COLLECTIONS_TSV OUTPUT_DIRECTORY [ENV_FILE]\n' "$0"
+  printf 'With --ids, each line is a collection PID, one tab, then its title (no header).\n'
   printf 'Retrieve each collection title (one per line); stop at the first failure.\n'
   printf 'Save successful button 2 commands in a new file under OUTPUT_DIRECTORY.\n'
 }
@@ -10,6 +12,11 @@ usage() {
 if [[ "${1:-}" == --help ]]; then
   usage
   exit 0
+fi
+mode=titles
+if [[ "${1:-}" == --ids ]]; then
+  mode=ids
+  shift
 fi
 if [[ $# -lt 2 || $# -gt 3 ]]; then
   usage >&2
@@ -66,9 +73,27 @@ while IFS= read -r title <&3 || [[ -n "$title" ]]; do
   if [[ -z "$title" ]]; then
     continue
   fi
+  collection_args=()
+  if [[ "$mode" == ids ]]; then
+    if [[ "$title" != *$'\t'* ]]; then
+      printf 'Invalid collection row at line %s: expected PID<TAB>title. Saved commands: %s\n' \
+        "$line" "$commands_file" >&2
+      exit 2
+    fi
+    collection_id=${title%%$'\t'*}
+    title=${title#*$'\t'}
+    title="${title#"${title%%[![:space:]]*}"}"
+    title="${title%"${title##*[![:space:]]}"}"
+    if [[ -z "$collection_id" || "$collection_id" == *[!0-9]* || -z "$title" || "$title" == *$'\t'* ]]; then
+      printf 'Invalid collection PID/title at line %s. Saved commands: %s\n' "$line" "$commands_file" >&2
+      exit 2
+    fi
+    collection_args+=(--collection-id "$collection_id")
+  fi
+  collection_args+=(--collection-title="$title")
   printf '\nRetrieving collection (line %s): %s\n' "$line" "$title"
   if "$python" "${args[@]}" \
-      --collection-title="$title" --output "$output" </dev/null | tee "$retrieval_output"; then
+      "${collection_args[@]}" --output "$output" </dev/null | tee "$retrieval_output"; then
     command=$(tail -n 1 "$retrieval_output")
     if [[ "$command" != *" -m gems --headless --source "* ]]; then
       printf 'No button 2 command found for %s; stopping. Previous commands: %s\n' \

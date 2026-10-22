@@ -26,6 +26,7 @@ def retrieve_manifest(
     client: AlmaClient,
     selection: str = "",
     collection_title: str | None = None,
+    collection_id: str = "",
     mms_ids: str = "",
     on_progress: Callable[[int, int], None] | None = None,
     check_cancelled: Callable[[], None] | None = None,
@@ -39,10 +40,15 @@ def retrieve_manifest(
     selection = (collection_title if collection_title is not None else selection).strip()
     if not ids and not selection:
         raise ValueError("Enter an Alma set ID, collection title, or MMS IDs.")
-    set_id = collection_id = ""
+    set_id = ""
     title = "MMS ID selection"
     if not ids:
-        if selection.isdecimal() and collection_title is None:
+        if collection_id:
+            if not collection_id.isascii() or not collection_id.isdecimal() or not selection:
+                raise ValueError("A numeric collection PID and a collection title label are required.")
+            title = selection
+            ids = client.fetch_collection_bibs(collection_id)
+        elif selection.isdecimal() and collection_title is None:
             set_id = selection
             title = client.fetch_set_title(set_id)
             ids = client.fetch_set_members(set_id)

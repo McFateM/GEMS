@@ -89,6 +89,37 @@ class CliTests(unittest.TestCase):
         self.assertIn("skipped collection positions: [3]", self.stderr.getvalue())
         self.assertIn("Entry 3 unavailable", (path.parent / "gems.log").read_text())
 
+    def test_collection_id_bypasses_all_title_searches_and_preserves_label(self):
+        title = "Scarlet & Black (S&B) Archives"
+        self.client.fetch_collection_bibs.return_value = ["991", "992", "991"]
+        path, payload = self.retrieve("--collection-id", "81310703090004641", "--collection-title", title)
+        self.client.resolve_collection.assert_not_called()
+        self.client.fetch_set_members.assert_not_called()
+        self.client.fetch_collection_bibs.assert_called_once_with("81310703090004641")
+        self.assertEqual(["991", "992"], self.client.fetch_records.call_args.args[0])
+        self.assertEqual("81310703090004641", payload["alma_collection_pid"])
+        self.assertEqual(title, payload["collection_title"])
+        self.assertEqual("collection-scarlet-black-s-b-archives-81310703090004641", path.parent.parent.name)
+        command = shlex.split(self.stdout.getvalue().splitlines()[-1])
+        self.assertEqual("scarlet-black-s-b-archives", command[command.index("--objectid-prefix") + 1])
+
+    def test_invalid_collection_id_arguments_fail_before_contacting_alma(self):
+        cases = [
+            ("--retrieve", "--collection-id", "abc", "--collection-title", "Title"),
+            ("--retrieve", "--collection-id", "123"),
+            ("--retrieve", "--collection-id", "123", "--collection-title", " "),
+            ("--retrieve", "--collection-id", "", "--collection-title", "Title"),
+            ("--retrieve", "--collection-id", "123", "--set-id", "456"),
+            ("--retrieve", "--collection-id", "123", "--mms-ids", "991"),
+            ("--collection-id", "123", "--collection-title", "Title"),
+        ]
+        for args in cases:
+            with self.subTest(args=args), self.assertRaises(SystemExit) as error:
+                self.run_cli("--headless", "--output", str(self.root), *args)
+            self.assertEqual(2, error.exception.code)
+        self.client.fetch_collection_bibs.assert_not_called()
+        self.client.resolve_collection.assert_not_called()
+
     def test_explicit_numeric_collection_title_is_not_treated_as_a_set(self):
         self.client.resolve_collection.return_value = ("456", "2026")
         self.client.fetch_collection_bibs.return_value = ["991"]

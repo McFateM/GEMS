@@ -26,6 +26,7 @@ def cli() -> int:
     selection.add_argument("--set-id", help="Alma set ID to retrieve")
     selection.add_argument("--collection-title", help="Exact Alma collection title to retrieve")
     selection.add_argument("--mms-ids", help="Comma-separated or newline-separated Alma MMS IDs to retrieve")
+    parser.add_argument("--collection-id", help="Collection PID; requires --collection-title as a label and bypasses title search")
     parser.add_argument(
         "--field-map",
         default="{}",
@@ -56,8 +57,14 @@ def cli() -> int:
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
 
-    if (args.set_id is not None or args.collection_title is not None or args.mms_ids is not None) and not args.retrieve:
-        parser.error("--set-id, --collection-title, and --mms-ids require --retrieve")
+    if (args.set_id is not None or args.collection_title is not None or args.mms_ids is not None
+            or args.collection_id is not None) and not args.retrieve:
+        parser.error("--set-id, --collection-title, --collection-id, and --mms-ids require --retrieve")
+    if args.collection_id is not None:
+        if not args.collection_id.isascii() or not args.collection_id.isdecimal():
+            parser.error("--collection-id must be a numeric Alma collection PID")
+        if not (args.collection_title or "").strip():
+            parser.error("--collection-id requires --collection-title as the output label")
 
     if args.source or args.output or args.headless or args.retrieve:
         if args.web or args.desktop:
@@ -83,6 +90,7 @@ def cli() -> int:
                     Path(args.output).expanduser(), client=AlmaClient(),
                     selection=args.set_id or args.collection_title or "", mms_ids=args.mms_ids or "",
                     collection_title=args.collection_title,
+                    collection_id=args.collection_id or "",
                     on_progress=progress,
                 )
             except (OSError, ValueError, RuntimeError, RequestException) as exc:
