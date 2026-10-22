@@ -488,6 +488,13 @@ a new timestamped run under `set-...`, `collection-...`, or `mms-ids-...`,
 containing the JSON manifest and `gems.log`, and prints the manifest path.
 It ends with a shell-quoted, copy-and-paste **button 2 command** using the current
 Python interpreter, the new manifest, and its run directory as the output folder.
+The printed command includes `--objectid-prefix` derived from the full resolved
+collection title: lowercase, with runs of spaces or punctuation replaced by
+hyphens (for example, `Social Justice at Grinnell` becomes
+`social-justice-at-grinnell`). This uses the existing ObjectID slug rules and
+does not truncate the title to the shorter run-folder name. Batch command files
+save this option too. Previously retrieved manifests and previously saved
+commands are not modified.
 The command exports all retrieved records by default; add `--start` and `--limit`
 to batch the export, or add your field map and other mapping options before running
 it. An explicit `--env-file` or `GEMS_ENV_FILE` is carried forward as `--env-file`.

@@ -96,6 +96,26 @@ class CliTests(unittest.TestCase):
         self.client.resolve_collection.assert_called_once_with("2026")
         self.client.fetch_set_members.assert_not_called()
 
+    def test_followup_prefix_uses_full_resolved_collection_title(self):
+        cases = [
+            ("Social Justice at Grinnell", "social-justice-at-grinnell"),
+            ("Scarlet & Black (S&B) Archives", "scarlet-black-s-b-archives"),
+            (" Alumni of the 1940's ", "alumni-of-the-1940-s"),
+            ("A Very Long Collection Title That Must Not Be Truncated After Forty Characters",
+             "a-very-long-collection-title-that-must-not-be-truncated-after-forty-characters"),
+        ]
+        self.client.fetch_collection_bibs.return_value = ["991"]
+        for title, expected in cases:
+            with self.subTest(title=title):
+                self.client.resolve_collection.return_value = ("456", title)
+                self.assertEqual(0, self.run_cli("--headless", "--retrieve", "--collection-title", "Lookup title",
+                                                 "--output", str(self.root)))
+                command = shlex.split(self.stdout.getvalue().splitlines()[-1])
+                self.assertEqual(expected, command[command.index("--objectid-prefix") + 1])
+                payload = json.loads(Path(command[command.index("--source") + 1]).read_text())
+                self.assertNotIn("objectid_prefix", payload)
+                self.assertNotIn("objectid", payload["records"][0])
+
     def test_mms_ids_accept_commas_and_newlines_and_do_not_resolve_a_set(self):
         path, payload = self.retrieve("--mms-ids", "991, 992\n991\n")
         self.assertEqual(["991", "992"], self.client.fetch_records.call_args.args[0])

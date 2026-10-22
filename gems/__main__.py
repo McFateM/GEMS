@@ -10,7 +10,7 @@ from pathlib import Path
 from requests import RequestException
 
 from .alma import AlmaClient
-from .pipeline import process_export
+from .pipeline import process_export, slugify
 from .retrieval import private_message, retrieve_manifest
 from .storage import Storage, load_environment
 
@@ -96,6 +96,7 @@ def cli() -> int:
             command = [
                 sys.executable, "-m", "gems", "--headless",
                 "--source", str(manifest), "--output", str(manifest.parent),
+                "--objectid-prefix", slugify(retrieval_result["collection_title"]),
             ]
             env_file = args.env_file or os.getenv("GEMS_ENV_FILE")
             if env_file:

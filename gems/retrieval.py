@@ -101,5 +101,5 @@ def retrieve_manifest(
     (run / "gems.log").write_text(
         "\n".join(f"{created.isoformat()} {message}" for message in messages) + "\n", encoding="utf-8",
     )
-    return dict(manifest=str(manifest), records=len(records), available_records=len(ids),
+    return dict(manifest=str(manifest), collection_title=title, records=len(records), available_records=len(ids),
                 skipped_positions=list(client.skipped_positions), warnings=warnings)
