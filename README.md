@@ -37,6 +37,57 @@ This repository now contains a small Flet-based application and headless pipelin
 - mapping source metadata into CollectionBuilder-oriented fields, and
 - writing a `collection_metadata.csv` plus exported objects and normalized JSON.
 
+## Offload migrated files from dg-landing
+
+Run [scripts/offload_migrated.sh](scripts/offload_migrated.sh) **on your Mac**,
+not on dg-landing, with the DGIngest SMB share mounted in Finder:
+
+```bash
+cd ~/GitHub/GEMS
+# Preview first (also the default when no option is supplied):
+bash scripts/offload_migrated.sh --dry-run
+# Transfer successfully, then remove each transferred source file:
+caffeinate -i bash scripts/offload_migrated.sh --move
+```
+
+`caffeinate -i` prevents idle sleep during the transfer, but not sleep from
+closing the lid. Keep the Mac open, connected to the network, and DGIngest
+mounted. To disconnect, press **Ctrl+C**, wait for the shell prompt, then
+eject the share normally. Later, reconnect and remount DGIngest, then rerun
+the same command. Completed transfers are preserved; files not yet transferred
+remain on dg-landing. The in-progress file may need some or all of its transfer
+repeated, so partial-file reuse is not guaranteed.
+
+This pulls **only files inside `objects/.complete/` directories** anywhere
+beneath `/data/gems/data/migrated/` over SSH from `sysadmin@dg-landing` into
+`/Volumes/DGIngest/_GEMS_Migration/Migrated/`. It preserves the full relative
+paths, including hidden files and the `.complete` directory itself. For example,
+`migrated/DGIngest-DATA/collection-name/run/objects/.complete/item/file.pdf`
+becomes `Migrated/DGIngest-DATA/collection-name/run/objects/.complete/item/file.pdf`.
+Other object files, manifests, CSVs, and logs remain on dg-landing.
+It requires working
+noninteractive SSH authentication and rsync on both machines; it works with
+macOS's bundled rsync. The script refuses to run unless DGIngest is an SMB
+mount, avoiding accidental copies to your Mac's internal disk. It creates
+the destination directory if needed, even in preview mode.
+
+Only offload completed, inactive files. Do not run simultaneous offloads or
+write into the selected `.complete` directories while moving them. Check
+that the share has enough free space for the selected files (roughly 39 GiB
+as of October 22, 2026), plus future collections.
+An interrupted or failed move can leave some files already moved; rerun the
+same command to resume. Rsync removes source files only after successful
+transfer (or confirmation that an existing destination file matches), uses
+checksums rather than size/time alone to compare existing files, and keeps
+partial downloads for resumption. Checksumming can take time over SMB.
+
+Destination-only files are never deleted. Different existing destination
+files are backed up under `Migrated/.replaced/<UTC timestamp>-<process ID>/`
+before replacement. Empty directories remain on dg-landing. No other
+directories under `/data/gems/data` are moved, and saved commands or manifests
+referencing moved server paths are not rewritten; retrieve a file back or
+adjust those paths before reusing such a manifest.
+
 ## Retrieve from Alma Digital
 
 GEMS can retrieve records directly from Alma using the same environment-variable contract as CABB. Copy `.env.example` to `.env`, then configure `ALMA_API_KEY` and `ALMA_API_REGION`. GEMS does not store the key in its settings file.
