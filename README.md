@@ -475,6 +475,40 @@ button 2. Progress and skipped-entry warnings go to stderr. Errors exit nonzero;
 headless retrieval does not silently redirect output to a local fallback folder.
 `--env-file /path/to/private.env` can replace `GEMS_ENV_FILE`.
 
+#### Button 1 for a list of collection titles
+
+Save a UTF-8 text file with one exact Alma collection title per line, without
+surrounding quotes:
+
+```text
+Social Justice at Grinnell
+Another Exact Collection Title
+```
+
+On dg-landing, run:
+
+```bash
+bash scripts/retrieve_collections.sh \
+  /path/to/collection-titles.txt \
+  "$HOME/gems-pilot/data" \
+  "$HOME/gems-pilot/config/gems.env"
+```
+
+The third argument is optional if `GEMS_ENV_FILE` is exported or the checkout's
+`.env` is configured. The script uses the checkout's `.venv/bin/python`; it does
+not install dependencies. You can invoke it from Bash or zsh using `bash` as
+shown, including from another directory by giving the script's full path.
+
+Titles are processed sequentially. Blank lines are skipped, surrounding whitespace
+is trimmed, and Windows CRLF line endings are accepted. Other characters,
+including quotes and `#`, are literal parts of the title, not shell syntax or
+comments. Each successful retrieval prints its manifest and button 2 follow-up
+command. **The script stops immediately at the first failure**, reports the
+failed line/title and completed count, and preserves the failing exit status.
+Earlier manifests remain intact; retry with a list containing only the remaining
+titles to avoid retrieving successful collections again. An empty list is an
+error. It never runs button 2 automatically. Use `tmux` for long batches.
+
 #### Button 2: map an existing manifest and download its objects
 
 ```bash
