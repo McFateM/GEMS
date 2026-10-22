@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -49,6 +50,12 @@ class CliTests(unittest.TestCase):
         self.assertEqual(0, self.run_cli("--headless", "--retrieve", "--output", str(self.root), *args))
         manifests = list(self.root.glob("*/*/gems_*.json"))
         self.assertEqual(1, len(manifests))
+        command = shlex.split(self.stdout.getvalue().splitlines()[-1])
+        self.assertEqual([sys.executable, "-m", "gems", "--headless"], command[:4])
+        self.assertEqual(str(manifests[0].resolve()), command[command.index("--source") + 1])
+        self.assertEqual(str(manifests[0].parent.resolve()), command[command.index("--output") + 1])
+        self.assertNotIn("--retrieve", command)
+        self.assertNotIn("--limit", command)
         return manifests[0], json.loads(manifests[0].read_text())
 
     def test_set_retrieves_all_unique_members_and_saves_manifest_only(self):
@@ -107,6 +114,26 @@ class CliTests(unittest.TestCase):
         self.assertEqual(2, len(manifests))
         self.assertEqual(manifests[0].parent.parent, manifests[1].parent.parent)
 
+    def test_followup_command_quotes_paths_and_preserves_environment_file(self):
+        destination = self.root / "operator's output"
+        destination.mkdir()
+        for explicit in (False, True):
+            with self.subTest(explicit=explicit), patch.dict(
+                os.environ, {"GEMS_ENV_FILE": str(self.root / "environment's default.env")},
+            ):
+                args = ["--env-file", str(self.root / "selected environment's.env")] if explicit else []
+                self.assertEqual(0, self.run_cli(
+                    "--headless", "--retrieve", "--mms-ids", "991",
+                    "--output", str(destination), *args,
+                ))
+                command = shlex.split(self.stdout.getvalue().splitlines()[-1])
+                manifest = Path(command[command.index("--source") + 1])
+                self.assertTrue(manifest.is_file())
+                self.assertEqual(destination.resolve(), manifest.parent.parent.parent)
+                self.assertEqual(str(manifest.parent), command[command.index("--output") + 1])
+                expected = args[1] if explicit else os.environ["GEMS_ENV_FILE"]
+                self.assertEqual(str(Path(expected).resolve()), command[command.index("--env-file") + 1])
+
     def test_invalid_options_fail_before_contacting_alma(self):
         cases = [
             ("--retrieve",),
@@ -155,6 +182,7 @@ class CliTests(unittest.TestCase):
             self.run_cli("--headless", "--retrieve", "--set-id", "123", "--output", str(self.root))
         self.assertIn("No Alma records", self.stderr.getvalue())
         self.assertEqual([], list(self.root.iterdir()))
+        self.assertNotIn("Button 2:", self.stdout.getvalue())
 
     def test_api_errors_redact_credentials(self):
         self.client.fetch_records.side_effect = ConnectionError("failed: https://example.org/file?token=private secret-key")
@@ -180,8 +208,9 @@ class CliTests(unittest.TestCase):
             "files": [{"path": str(original), "filename": "sample.txt"}],
         }]
         manifest, _ = self.retrieve("--mms-ids", "991")
-        self.assertEqual(0, self.run_cli("--headless", "--source", str(manifest),
-                                        "--output", str(manifest.parent)))
+        command = shlex.split(self.stdout.getvalue().splitlines()[-1])
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        self.assertEqual(0, completed.returncode, completed.stderr)
         self.assertEqual(original.read_bytes(), (manifest.parent / "objects" / "sample.txt").read_bytes())
         self.assertIn("Retrieved title", (manifest.parent / "collection_metadata.csv").read_text())
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -91,6 +92,16 @@ def cli() -> int:
             if retrieval_result["skipped_positions"]:
                 print(f"Warning: skipped collection positions: {retrieval_result['skipped_positions']}", file=sys.stderr)
             print(f"Saved {retrieval_result['records']} Alma record(s). Manifest: {retrieval_result['manifest']}")
+            manifest = Path(retrieval_result["manifest"]).resolve()
+            command = [
+                sys.executable, "-m", "gems", "--headless",
+                "--source", str(manifest), "--output", str(manifest.parent),
+            ]
+            env_file = args.env_file or os.getenv("GEMS_ENV_FILE")
+            if env_file:
+                command.extend(["--env-file", str(Path(env_file).expanduser().resolve())])
+            print("\nButton 2: map and export all records just retrieved:")
+            print(shlex.join(command))
             return 0
         if not args.source or not args.output:
             parser.error("--source and --output are required in headless mode")

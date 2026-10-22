@@ -463,6 +463,12 @@ The set/MMS numbers above are placeholders; replace them with approved IDs.
 `--output` must be an existing writable parent directory. Each invocation saves
 a new timestamped run under `set-...`, `collection-...`, or `mms-ids-...`,
 containing the JSON manifest and `gems.log`, and prints the manifest path.
+It ends with a shell-quoted, copy-and-paste **button 2 command** using the current
+Python interpreter, the new manifest, and its run directory as the output folder.
+The command exports all retrieved records by default; add `--start` and `--limit`
+to batch the export, or add your field map and other mapping options before running
+it. An explicit `--env-file` or `GEMS_ENV_FILE` is carried forward as `--env-file`.
+The command is printed only; button 1 does not automatically start button 2.
 Retrieval always covers the entire selection; `--start`, `--limit`, and other
 mapping options are rejected for button 1. Objects are downloaded only by
 button 2. Progress and skipped-entry warnings go to stderr. Errors exit nonzero;
