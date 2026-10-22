@@ -3,16 +3,15 @@ from __future__ import annotations
 import copy
 import json
 import os
-import re
 import sys
 import threading
 import uuid
 from datetime import datetime
-from hashlib import sha256
 from typing import Any
 
 from .alma import AlmaClient
 from .pipeline import ExportCancelled, is_template_map, process_export
+from .retrieval import private_message, retrieve_manifest
 from .storage import Storage, atomic_json
 
 ACTIVE = {"queued", "running", "cancelling"}
@@ -20,13 +19,6 @@ ACTIVE = {"queued", "running", "cancelling"}
 
 def now() -> str:
     return datetime.now().astimezone().isoformat()
-
-
-def private_message(message: str) -> str:
-    key = os.getenv("ALMA_API_KEY")
-    if key:
-        message = message.replace(key, "[redacted]")
-    return re.sub(r"(https?://[^\s?]+)\?[^\s]+", r"\1?[redacted]", message)
 
 
 class JobService:
@@ -139,6 +131,14 @@ class JobService:
                 raise ValueError("Enter an Alma set ID, collection title, or MMS IDs.")
         else:
             values["source"] = str(self.storage.data_path(values["source"]))
+            source_type = values.get("source_type") or "alma"
+            if source_type not in {"alma", "omeka"}:
+                raise ValueError("Input source must be alma or omeka.")
+            values["source_type"] = source_type
+            if source_type == "omeka":
+                values["omeka_output"] = str(self.storage.data_path(values.get("omeka_output", ""), directory=True))
+                values["legacy_mods"] = ""
+                values["prefix"] = ""
             start = int(values.get("start") or 1)
             limit = int(values["limit"]) if values.get("limit") else None
             if start < 1 or (limit is not None and limit < 1):
@@ -217,73 +217,26 @@ class JobService:
             print(self.storage_error, file=sys.stderr, flush=True)
 
     def _retrieve(self, job_id: str, values: dict[str, Any]) -> dict[str, Any]:
-        client = AlmaClient()
-        ids = [part.strip() for part in re.split(r"[,\n]", values.get("mms_ids", "")) if part.strip()]
-        selection = values.get("selection", "").strip()
-        set_id = collection_id = ""
-        title = "MMS ID selection"
-        if not ids:
-            if selection.isdecimal():
-                set_id = selection
-                title = client.fetch_set_title(set_id)
-                ids = client.fetch_set_members(set_id)
-            else:
-                collection_id, title = client.resolve_collection(selection)
-                ids = client.fetch_collection_bibs(collection_id)
-        ids = list(dict.fromkeys(ids))
-        if not ids:
-            raise ValueError("No Alma records were found for that selection.")
-        self._check_cancelled()
-        milestone = -1
-
         def progress(done: int, total: int) -> None:
-            nonlocal milestone
-            self._check_cancelled()
             current = done * 10 // total if total else 10
-            if current > milestone:
-                milestone = current
-                message = f"Retrieving Alma records: {current * 10}% ({done}/{total})"
-                self._update(job_id, message=message, progress=done / total if total else 1)
-                self._log(job_id, message)
+            message = f"Retrieving Alma records: {current * 10}% ({done}/{total})"
+            self._update(job_id, message=message, progress=done / total if total else 1)
+            self._log(job_id, message)
 
-        records = client.fetch_records(ids, on_progress=progress)
-        self._check_cancelled()
-        slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40].strip("-") or "collection"
-        group = (f"set-{slug}-{set_id}" if set_id else f"collection-{slug}-{collection_id}" if collection_id
-                 else f"mms-ids-{sha256(','.join(sorted(ids)).encode()).hexdigest()[:12]}")
-        created = datetime.now().astimezone()
-        parent = self.storage.data_path(values["destination"], directory=True) / group
-        parent.mkdir(exist_ok=True)
-        run_name = f"{created:%Y-%m-%d_%H-%M-%S_%Z}"
-        run = parent / run_name
-        suffix = 0
-        while True:
-            try:
-                run.mkdir()
-                break
-            except FileExistsError:
-                suffix += 1
-                run = parent / f"{run_name}-{suffix}"
-        manifest = run / f"gems_{slug}_{run.name}.json"
-        payload: dict[str, Any] = dict(collection_title=title, created_at=created.isoformat(),
-                                       retrieval={"available_records": len(ids)}, records=records)
-        if set_id:
-            payload["alma_set_id"] = set_id
-        if collection_id:
-            payload["alma_collection_pid"] = collection_id
-        atomic_json(manifest, payload)
-        warnings = [private_message(str(error)) for error in client.skipped_errors]
-        for warning in warnings:
-            self._log(job_id, f"Skipped collection entry: {warning}")
-        (run / "gems.log").write_text(
-            f"{now()} Manifest contains {len(records)} Alma records; job {job_id}\n" + "\n".join(warnings) + "\n",
-            encoding="utf-8",
+        result = retrieve_manifest(
+            self.storage.data_path(values["destination"], directory=True), client=AlmaClient(),
+            selection=values.get("selection", ""), mms_ids=values.get("mms_ids", ""),
+            on_progress=progress, check_cancelled=self._check_cancelled,
         )
-        return dict(manifest=str(manifest), records=len(records), available_records=len(ids),
-                    skipped_positions=list(client.skipped_positions), warnings=warnings)
+        for warning in result["warnings"]:
+            self._log(job_id, f"Skipped collection entry: {warning}")
+        return result
 
     def _export(self, job_id: str, values: dict[str, Any]) -> dict[str, Any]:
         source = self.storage.data_path(values["source"])
+        source_type = values.get("source_type", "alma")
+        destination = (self.storage.data_path(values["omeka_output"], directory=True)
+                       if source_type == "omeka" else source.parent)
         field_map = json.loads(self.storage.map_path(values["field_map"]).read_text(encoding="utf-8")) if values.get("field_map") else {}
         if not isinstance(field_map, dict) or (
             not is_template_map(field_map) and not all(isinstance(v, str) for v in field_map.values())
@@ -300,18 +253,19 @@ class JobService:
             return self._cancel.is_set()
 
         result = process_export(
-            source, source.parent, field_map=field_map, start=values["start"], limit=values["limit"],
+            source, destination, source_type=source_type,
+            field_map=field_map, start=values["start"], limit=values["limit"],
             legacy_mods_dir=values.get("legacy_mods") or None,
             objectid_prefix=values.get("prefix") or None,
-            refresh_source=AlmaClient().refresh_file_link,
+            refresh_source=AlmaClient().refresh_file_link if source_type == "alma" else None,
             progress=progress, is_cancelled=cancelled,
         )
         summary = dict(csv=str(result.csv_path), normalized=str(result.json_path), objects=str(result.objects_dir),
                        rows=result.row_count, files=result.file_count, first_record=result.first_record,
                        last_record=result.last_record, total_records=result.total_records,
-                       renamed_files=result.renamed_files)
+                       renamed_files=result.renamed_files, skipped_records=result.skipped_records)
         self.storage.check()
-        with (source.parent / "gems.log").open("a", encoding="utf-8") as handle:
+        with (destination / "gems.log").open("a", encoding="utf-8") as handle:
             handle.write(f"{now()} Job {job_id}: {json.dumps(summary)}\n")
         return summary
 

@@ -2,16 +2,17 @@
 
 This runbook covers the `linux` branch: a private, single-operator Flet web
 service with durable jobs and local configuration/data under `$HOME/gems-pilot`
-on dg-landing. Desktop mode remains available. Use the
+on dg-landing, the normal operational host. Desktop mode remains available for
+compatibility. Both Alma retrieval (button 1) and Alma/Omeka mapping (button 2)
+also run without Flet using the [headless commands](README.md#run-headlessly).
+Use the
 [README](README.md#linuxweb-service-and-local-storage)
 for application behavior and the
 [dg-landing quick start](../dg-landing/README.md) for VPN/SSH access.
 
-**Status, 2026-10-19:** implementation has been tested locally on macOS, including
-87 unit tests and browser/restart tests. It has not been installed or certified
-on dg-landing or its intended storage. The `linux` changes are currently
-**uncommitted and unpushed**; an ordinary clone cannot obtain them yet.
-The commands below are instructions, not actions already performed.
+The `linux` branch includes the Omeka Classic/S JSON importer and headless Alma
+retrieval by set ID, collection title, or MMS IDs. Deployment verification does
+not replace the separate storage-capacity and manual acceptance gates below.
 
 **Storage plan, 2026-10-20:** dg-landing is web-facing and cannot access the
 campus SMB `//storage` server. A **500 GB local `/data` store has been requested**

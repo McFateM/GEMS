@@ -142,6 +142,58 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual([3], job["result"]["skipped_positions"])
         self.assertIn("Entry 3 unavailable", (manifest.parent / "gems.log").read_text())
 
+    def test_omeka_classic_and_s_jobs_use_separate_output_without_alma(self):
+        fixtures = Path(__file__).parent / "fixtures" / "omeka"
+        original = self.storage.data / "asset.bin"
+        original.write_bytes(b"Omeka physical asset")
+        for fixture, count in (("classic-single.json", 1), ("s-media.json", 2)):
+            with self.subTest(fixture=fixture):
+                payload = json.loads((fixtures / fixture).read_text())
+                if fixture.startswith("classic"):
+                    payload[0]["files_list"][0]["file_urls"]["original"] = original.as_uri()
+                else:
+                    for media in payload[0]["o:media"]:
+                        media["o:original_url"] = original.as_uri()
+                source = self.storage.data / fixture
+                source.write_text(json.dumps(payload))
+                output = self.storage.data / fixture.removesuffix(".json")
+                output.mkdir()
+                with patch("gems.service.AlmaClient") as alma:
+                    job_id = self.service.submit("operator", "export", {
+                        "source": str(source), "source_type": "omeka", "omeka_output": str(output),
+                        "legacy_mods": "/not-an-alma-input", "prefix": "ignored",
+                    })
+                    job = self.wait(job_id)
+                self.assertEqual("succeeded", job["state"], job["message"])
+                alma.assert_not_called()
+                self.assertEqual((count, count), (job["result"]["rows"], job["result"]["files"]))
+                self.assertEqual(output / "collection_metadata.csv", Path(job["result"]["csv"]))
+                with Path(job["result"]["csv"]).open(newline="") as handle:
+                    rows = list(csv.DictReader(handle))
+                self.assertEqual(count, len(rows))
+                for row in rows:
+                    self.assertNotIn("objectid", row)
+                assets = [path for path in (output / "objects").rglob("*") if path.is_file()]
+                self.assertEqual(count, len(assets))
+                self.assertTrue(all(path.read_bytes() == original.read_bytes() for path in assets))
+                self.assertTrue((output / "gems.log").is_file())
+                self.assertEqual("omeka", self.service.preferences()["source_type"])
+        self.assertFalse((self.storage.data / "collection_metadata.csv").exists())
+
+    def test_omeka_output_and_source_type_are_validated_before_job_creation(self):
+        source = self.manifest()
+        outside = self.root / "outside"
+        outside.mkdir()
+        for values in (
+            {"source_type": "invalid"},
+            {"source_type": "omeka"},
+            {"source_type": "omeka", "omeka_output": str(outside)},
+            {"source_type": "omeka", "omeka_output": str(self.storage.data / "missing")},
+        ):
+            with self.subTest(values=values), self.assertRaises((ValueError, FileNotFoundError)):
+                self.service.submit("operator", "export", {"source": str(source), **values})
+        self.assertEqual([], self.service.jobs())
+
     def test_serialized_jobs_operator_lease_and_tab_disconnect(self):
         entered, release = threading.Event(), threading.Event()
 

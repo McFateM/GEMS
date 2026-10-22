@@ -27,6 +27,15 @@ def main(page: ft.Page, service: JobService) -> None:
                                value=preferences.get("destination", str(service.storage.data)))
     source = ft.TextField(label="Prepared manifest (server JSON or CSV path)",
                           value=preferences.get("source", ""))
+    source_type = ft.Dropdown(
+        label="Input source", value=preferences.get("source_type", "alma"),
+        options=[ft.dropdown.Option("alma", "Alma / Specto prepared manifest"),
+                 ft.dropdown.Option("omeka", "Omeka Classic / Omeka S JSON export")],
+    )
+    omeka_output = ft.TextField(
+        label="Omeka output folder (existing server directory inside GEMS_DATA_DIR)",
+        value=preferences.get("omeka_output", ""),
+    )
     field_map = ft.TextField(label="Field map (optional server JSON path in configuration or data)",
                              value=preferences.get("field_map", ""))
     legacy = ft.TextField(label="Legacy MODS folder (optional server directory inside GEMS_DATA_DIR)",
@@ -45,11 +54,12 @@ def main(page: ft.Page, service: JobService) -> None:
     selected: str | None = None
     disconnected = False
     poll_task: Future[None] | None = None
-    fields = [selection, ids, destination, source, field_map, legacy, start, limit, prefix]
+    fields = [selection, ids, destination, source_type, source, omeka_output, field_map, legacy, start, limit, prefix]
 
     def values() -> dict[str, str]:
         return dict(selection=selection.value or "", mms_ids=ids.value or "",
                     destination=destination.value or "", source=source.value or "",
+                    source_type=source_type.value or "alma", omeka_output=omeka_output.value or "",
                     field_map=field_map.value or "", legacy_mods=legacy.value or "",
                     start=start.value or "1", limit=limit.value or "", prefix=prefix.value or "")
 
@@ -102,7 +112,8 @@ def main(page: ft.Page, service: JobService) -> None:
             job = next((job for job in service.jobs() if job["id"] == selected), None)
             if job and job["result"].get("manifest"):
                 source.value = job["result"]["manifest"]
-        page.update()
+                source_type.value = "alma"
+        refresh()
 
     use_button = ft.TextButton("Use this retrieved manifest for step 2", on_click=use_manifest, disabled=True)
 
@@ -113,6 +124,10 @@ def main(page: ft.Page, service: JobService) -> None:
         busy = any(job["state"] in ACTIVE for job in history)
         for control in fields:
             control.disabled = not operator or busy or bool(service.storage_error)
+        omeka = source_type.value == "omeka"
+        omeka_output.visible = omeka
+        legacy.disabled = prefix.disabled = legacy.disabled or omeka
+        source.label = "Omeka JSON export (server path)" if omeka else "Prepared manifest (server JSON or CSV path)"
         retrieve_button.disabled = export_button.disabled = not operator or busy or bool(service.storage_error)
         cancel_button.disabled = not operator or not busy or bool(service.storage_error)
         if not operator:
@@ -166,12 +181,13 @@ def main(page: ft.Page, service: JobService) -> None:
     page.on_disconnect = disconnect
     page.on_close = disconnect
     page.on_connect = connect
+    source_type.on_change = lambda _: refresh()
     page.add(ft.Column(scroll=ft.ScrollMode.AUTO, expand=True, controls=[
         ft.Text("GEMS - Linux/Web", size=30, weight=ft.FontWeight.BOLD),
         ft.Text("Private single-operator service. Paths refer to mounted server storage, not your workstation."),
         ft.Text(f"Configuration: {service.storage.config}\nData: {service.storage.data}", selectable=True),
         notice, ft.Divider(), ft.Text("Retrieve from Alma", size=20), selection, ids, destination, retrieve_button,
-        ft.Divider(), ft.Text("Map Manifest to CSV", size=20), source, field_map, legacy,
+        ft.Divider(), ft.Text("Map Manifest to CSV", size=20), source_type, source, omeka_output, field_map, legacy,
         ft.Row([start, limit, prefix], wrap=True), export_button, ft.Divider(),
         jobs, status, progress, details, use_button, cancel_button,
         ft.TextButton("Refresh job log", on_click=read_log), log,

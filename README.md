@@ -2,10 +2,10 @@
 
 GEMS: Gather, Export, Map, Serialize.
 
-> Running GEMS/DART on a remote Windows workstation inside the campus network?
-> See [REMOTE_WINDOWS.md](../Remote-Desktop/REMOTE_WINDOWS.md) in the sibling
-> Remote-Desktop repository for the RDP connection guide and
-> the one-command Windows bootstrap script.
+The operational version is the `linux` branch on **dg-landing**. Use SSH for
+headless processing or the private Linux web interface; desktop modes remain
+available for compatibility, not as the normal processing environment.
+See [INSTALL-LINUX.md](INSTALL-LINUX.md) for host setup and storage safeguards.
 
 This repository now contains a small Flet-based application and headless pipeline for:
 - loading Alma Digital / Specto exports from JSON or CSV,
@@ -429,9 +429,71 @@ constraints file and release revision. DART migration is a separate follow-up.
 
 ### Run headlessly
 
+Run these commands **on dg-landing**, from `~/GitHub/GEMS`. Keep credentials
+in the existing private environment file, not in command-line arguments.
+Do not run headless processing against a run directory while a browser job is
+writing to it. Headless commands run in the foreground and do not create entries
+in browser job history; use a persistent SSH session (for example, `tmux`) for
+long operations.
+
+#### Button 1: retrieve Alma records and save a manifest
+
+Choose exactly one of the three input branches:
+
 ```bash
-python -m gems --headless --source /path/to/export.json --output /path/to/output
+cd ~/GitHub/GEMS
+export GEMS_ENV_FILE="$HOME/gems-pilot/config/gems.env"
+
+# Alma set
+.venv/bin/python -m gems --headless --retrieve \
+  --set-id 123456789 --output "$HOME/gems-pilot/data"
+
+# Exact Alma collection title
+.venv/bin/python -m gems --headless --retrieve \
+  --collection-title "Social Justice at Grinnell" \
+  --output "$HOME/gems-pilot/data"
+
+# Explicit MMS IDs, separated by commas or newlines
+.venv/bin/python -m gems --headless --retrieve \
+  --mms-ids "991234567890,991234567891" \
+  --output "$HOME/gems-pilot/data"
 ```
+
+The set/MMS numbers above are placeholders; replace them with approved IDs.
+`--output` must be an existing writable parent directory. Each invocation saves
+a new timestamped run under `set-...`, `collection-...`, or `mms-ids-...`,
+containing the JSON manifest and `gems.log`, and prints the manifest path.
+Retrieval always covers the entire selection; `--start`, `--limit`, and other
+mapping options are rejected for button 1. Objects are downloaded only by
+button 2. Progress and skipped-entry warnings go to stderr. Errors exit nonzero;
+headless retrieval does not silently redirect output to a local fallback folder.
+`--env-file /path/to/private.env` can replace `GEMS_ENV_FILE`.
+
+#### Button 2: map an existing manifest and download its objects
+
+```bash
+.venv/bin/python -m gems --headless \
+  --source /path/printed/by/button-1/manifest.json \
+  --output /path/printed/by/button-1 \
+  --start 1 --limit 100
+```
+
+Use the directory containing the manifest as `--output` to match button 2 in
+the UI. Omit `--limit` to map all remaining records. Repeat with `--start 101`,
+etc., to merge batches. Optional `--objectid-prefix`, `--legacy-mods`, and
+`--field-map` provide the corresponding mapping controls.
+
+For either Omeka Classic or Omeka S JSON, button 1 is unnecessary:
+
+```bash
+.venv/bin/python -m gems --headless --source-type omeka \
+  --source "$HOME/gems-pilot/data/omeka-export.json" \
+  --output "$HOME/gems-pilot/data/omeka-output"
+```
+
+In the Linux browser UI, choose **Omeka Classic / Omeka S JSON export** under
+**Input source** and supply an existing **Omeka output folder** inside
+`GEMS_DATA_DIR`. Alma-only prefix and legacy-MODS controls are disabled.
 
 ### Optional field mapping
 
