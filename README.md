@@ -2,10 +2,33 @@
 
 GEMS: Gather, Export, Map, Serialize.
 
-The operational version is the `linux` branch on **dg-landing**. Use SSH for
+The Linux/web, Omeka JSON import, and headless retrieval work has been merged
+into `main`. Use **`main` on dg-landing** for normal operation; the older `linux`
+branch is no longer needed for these features. Use SSH for
 headless processing or the private Linux web interface; desktop modes remain
 available for compatibility, not as the normal processing environment.
 See [INSTALL-LINUX.md](INSTALL-LINUX.md) for host setup and storage safeguards.
+
+### Updating an existing dg-landing checkout
+
+Stop any running GEMS process and wait for its worker to finish before updating.
+In a dg-landing shell:
+
+```bash
+cd ~/GitHub/GEMS
+git status --short
+# Continue only with a clean working tree; preserve any local changes first.
+git fetch origin
+git switch main
+git pull --ff-only origin main
+```
+
+If the checkout was on `linux`, switching to `main` includes the merged Linux
+features and the new [collection-title batch script](#button-1-for-a-list-of-collection-titles).
+Do not keep pulling `linux` to obtain new `main` changes. No dependency reinstall
+is needed just for the batch script; it uses the existing headless environment.
+Some older Linux runbook branch references predate the merge; use `main` when
+following those setup instructions.
 
 This repository now contains a small Flet-based application and headless pipeline for:
 - loading Alma Digital / Specto exports from JSON or CSV,
@@ -212,7 +235,7 @@ The status strip at the bottom shows progress, results, and errors for retrieval
 For the ordered installation, legacy-data migration, acceptance testing, and
 development procedure, follow [Installing GEMS on dg-landing](INSTALL-LINUX.md).
 
-The `linux` branch adds a private, single-operator Flet web service with durable
+The Linux support now included in `main` provides a private, single-operator Flet web service with durable
 job history. It is **not a public, multi-user service**. It listens only on
 `127.0.0.1` (default port 8550), launches no desktop/browser on the server, and
 requires explicit configuration and data directories. Both directories must
@@ -477,6 +500,9 @@ headless retrieval does not silently redirect output to a local fallback folder.
 
 #### Button 1 for a list of collection titles
 
+Use [scripts/retrieve_collections.sh](scripts/retrieve_collections.sh), included
+in `main`, to run headless button 1 against a list without starting button 2.
+
 Save a UTF-8 text file with one exact Alma collection title per line, without
 surrounding quotes:
 
@@ -485,9 +511,10 @@ Social Justice at Grinnell
 Another Exact Collection Title
 ```
 
-On dg-landing, run:
+After updating the dg-landing checkout to `main` as described above, run:
 
 ```bash
+cd ~/GitHub/GEMS
 bash scripts/retrieve_collections.sh \
   /path/to/collection-titles.txt \
   "$HOME/gems-pilot/data" \
