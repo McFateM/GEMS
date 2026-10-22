@@ -84,6 +84,23 @@ def main(page: ft.Page) -> None:
         value=settings.get("source_path", ""),
         expand=True,
     )
+    source_type = ft.Dropdown(
+        label="Input source",
+        value=settings.get("source_type", "alma"),
+        options=[
+            ft.dropdown.Option("alma", "Alma / Specto prepared manifest"),
+            ft.dropdown.Option("omeka", "Omeka Classic / Omeka S JSON export"),
+        ],
+        on_change=lambda _: update_source_type(),
+    )
+    omeka_output = ft.TextField(
+        label="Omeka output folder",
+        hint_text="Export destination for objects/, collection_metadata.csv, and normalized_records.json",
+        value=settings.get("omeka_output_path", ""),
+        visible=source_type.value == "omeka",
+        on_change=lambda _: update_settings(),
+        expand=True,
+    )
     output_field = ft.TextField(
         label="Destination folder",
         hint_text="e.g. /Volumes/DGIngest/.GEMS-data; subfolders are named from the set, collection, or MMS IDs",
@@ -193,6 +210,8 @@ def main(page: ft.Page) -> None:
         save_settings(
             {
                 "source_path": source_field.value or "",
+                "source_type": source_type.value or "alma",
+                "omeka_output_path": omeka_output.value or "",
                 "field_map_path": mapping_field.value or "",
                 "legacy_mods_path": legacy_mods_field.value or "",
                 "alma_set_selection": alma_set_field.value or "",
@@ -205,14 +224,30 @@ def main(page: ft.Page) -> None:
         )
         refresh_range_summary()
 
+    def update_source_type(*, persist: bool = True) -> None:
+        omeka = source_type.value == "omeka"
+        omeka_output.visible = omeka
+        prefix_field.disabled = legacy_mods_field.disabled = omeka
+        source_field.label = "Omeka JSON export" if omeka else "Prepared export manifest"
+        if persist:
+            update_settings()
+        else:
+            refresh_range_summary()
+        refresh_ui()
+
     def refresh_range_summary() -> None:
         """Describe the current start/limit selection: which records, and that compounds stay whole."""
         try:
             if not source_field.value:
                 range_summary.value = ""
                 return
-            payload = json.loads(Path(source_field.value).read_text(encoding="utf-8"))
-            records = payload.get("records") if isinstance(payload, dict) else payload
+            if source_type.value == "omeka":
+                from .omeka import load_omeka
+
+                records = load_omeka(Path(source_field.value))
+            else:
+                payload = json.loads(Path(source_field.value).read_text(encoding="utf-8"))
+                records = payload.get("records") if isinstance(payload, dict) else payload
             if not isinstance(records, list):
                 range_summary.value = ""
                 return
@@ -220,8 +255,8 @@ def main(page: ft.Page) -> None:
             total = len(records)
             start = int(start_field.value or "1")
             limit = int(limit_field.value) if limit_field.value else None
-        except (OSError, ValueError, json.JSONDecodeError):
-            range_summary.value = ""
+        except (OSError, ValueError) as exc:
+            range_summary.value = f"Cannot read Omeka export: {exc}" if source_type.value == "omeka" else ""
             return
         if total == 0:
             range_summary.value = "Manifest has no records."
@@ -316,6 +351,8 @@ def main(page: ft.Page) -> None:
                 len(alma_records), retrieved_set_id or retrieved_collection_id or "MMS IDs",
             )
             source_field.value = str(manifest_path)
+            source_type.value = "alma"
+            update_source_type(persist=False)
             update_settings()
             refresh_range_summary()
             report(f"Saved {len(alma_records)} Alma record(s) to {run_dir}. Ready to map and export.{note}", success=True)
@@ -384,8 +421,16 @@ def main(page: ft.Page) -> None:
                 raise ValueError("Record limit must be a positive whole number.")
             field_map = load_field_map()
             manifest_path = Path(source_field.value)
+            input_type = source_type.value or "alma"
+            export_destination = manifest_path.parent
+            if input_type == "omeka":
+                if not (omeka_output.value or "").strip():
+                    raise ValueError("Enter an Omeka output folder.")
+                export_destination = Path(omeka_output.value.strip()).expanduser()
             legacy_mods = (legacy_mods_field.value or "").strip()
-            if legacy_mods and not Path(legacy_mods).is_dir():
+            if input_type == "omeka":
+                legacy_mods = ""
+            elif legacy_mods and not Path(legacy_mods).is_dir():
                 raise ValueError(f"Legacy MODS folder not found: {legacy_mods}")
         except Exception as exc:
             report(str(exc), error=True)
@@ -410,28 +455,33 @@ def main(page: ft.Page) -> None:
                 report("Mapping and exporting manifest...")
                 result = process_export(
                     manifest_path,
-                    manifest_path.parent,
+                    export_destination,
+                    source_type=input_type,
                     field_map=field_map,
                     legacy_mods_dir=legacy_mods or None,
                     start=start,
                     limit=limit,
-                    refresh_source=AlmaClient().refresh_file_link,
+                    refresh_source=AlmaClient().refresh_file_link if input_type == "alma" else None,
                     objectid_prefix=(prefix_field.value or "").strip() or None,
                     progress=on_progress,
                     is_cancelled=export_cancel_requested.is_set,
                 )
                 update_settings()
                 for name in result.renamed_files:
-                    logger.warning("Renamed to avoid a filename clash with a different Alma file: %s", name)
+                    logger.warning("Renamed to avoid a filename clash with a different source file: %s", name)
                 renamed_note = (
                     f" {len(result.renamed_files)} file(s) shared a name with a different file and were saved with their "
-                    "Alma file ID appended; see the activity log."
+                    "source-specific suffix appended; see the activity log."
                     if result.renamed_files else ""
+                )
+                skipped_note = (
+                    f" Skipped {len(result.skipped_records)} item(s) without media: {', '.join(result.skipped_records)}."
+                    if result.skipped_records else ""
                 )
                 report(
                     f"Mapped records {result.first_record}–{result.last_record} of {result.total_records}: "
                     f"{result.file_count} file(s); CSV now has {result.row_count} row(s). "
-                    f"Results saved to {result.csv_path.parent}.{renamed_note}",
+                    f"Results saved to {result.csv_path.parent}.{renamed_note}{skipped_note}",
                     success=True,
                 )
             except ExportCancelled:
@@ -560,6 +610,8 @@ def main(page: ft.Page) -> None:
                     ),
                     ft.Divider(),
                     ft.Text("Map Manifest to CSV", size=20, weight=ft.FontWeight.W_600),
+                    source_type,
+                    omeka_output,
                     ft.Row(
                         [
                             source_field,
@@ -635,7 +687,7 @@ def main(page: ft.Page) -> None:
             bgcolor=ft.Colors.GREY_100,
         )
     )
-    refresh_range_summary()
+    update_source_type()
 
 
 def launch() -> None:

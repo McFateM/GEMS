@@ -1,0 +1,29 @@
+[
+  {
+    "@context": "https://s.example.org/api-context",
+    "@id": "https://s.example.org/api/items/3",
+    "@type": ["o:Item"],
+    "o:id": 3,
+    "dcterms:title": [{"type": "literal", "property_id": 1, "@value": "Oral history", "@language": "en"}],
+    "dcterms:creator": [{"@value": "Speaker One"}, {"@value": "Speaker Two"}, {"@value": ""}, {}],
+    "dcterms:subject": [{"type": "uri", "@id": "https://id.example.org/history"}],
+    "dcterms:description": [],
+    "dcterms:language": null,
+    "o:media": [
+      {
+        "@id": "https://s.example.org/api/media/30",
+        "@type": ["o:Media"],
+        "o:id": 30,
+        "o:source": "Interview.mp3",
+        "o:media_type": "audio/mpeg",
+        "o:original_url": "https://s.example.org/files/original/audio.mp3"
+      },
+      {
+        "@id": "https://s.example.org/api/media/31",
+        "o:id": 31,
+        "o:filename": "Portrait.jpg",
+        "o:original_url": "https://s.example.org/files/original/portrait.jpg"
+      }
+    ]
+  }
+]

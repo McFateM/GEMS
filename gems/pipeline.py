@@ -14,6 +14,7 @@ from functools import cache
 from hashlib import sha256
 from itertools import chain
 from pathlib import Path, PurePosixPath
+from tempfile import NamedTemporaryFile
 from typing import Any
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, unquote, urlparse
@@ -77,6 +78,7 @@ class ExportResult:
     last_record: int = 0
     total_records: int = 0
     renamed_files: list[str] = field(default_factory=list)
+    skipped_records: list[str] = field(default_factory=list)
 
 
 RefreshSource = Callable[[dict[str, Any], dict[str, str]], str]
@@ -94,6 +96,7 @@ def process_export(
     *,
     field_map: dict[str, Any] | None = None,
     source_system: str = "alma_digital",
+    source_type: str = "alma",
     legacy_mods_dir: str | Path | None = None,
     start: int = 1,
     limit: int | None = None,
@@ -103,6 +106,17 @@ def process_export(
     is_cancelled: CancelCheck | None = None,
 ) -> ExportResult:
     source = Path(source_path)
+    if source_type == "omeka":
+        from .omeka import asset_field_map, load_omeka
+
+        return process_records(
+            load_omeka(source, resolve_media=True, progress=progress, is_cancelled=is_cancelled),
+            output_dir, field_map=asset_field_map(field_map),
+            start=start, limit=limit, progress=progress, is_cancelled=is_cancelled,
+            asset_rows_only=True,
+        )
+    if source_type != "alma":
+        raise ValueError(f"Unsupported input source: {source_type}")
     renamed: list[str] = []
     if is_template_map(field_map) and source.suffix.lower() == ".json":
         payload = json.loads(source.read_text(encoding="utf-8"))
@@ -151,6 +165,7 @@ def process_records(
     objectid_prefix: str | None = None,
     progress: ProgressCallback | None = None,
     is_cancelled: CancelCheck | None = None,
+    asset_rows_only: bool = False,
 ) -> ExportResult:
     if start < 1 or (limit is not None and limit < 1):
         raise ValueError("Start record and record limit must be positive whole numbers.")
@@ -161,16 +176,28 @@ def process_records(
     csv_path = destination / "collection_metadata.csv"
     json_path = destination / "normalized_records.json"
     renamed_files: list[str] = []
+    skipped_records: list[str] = []
     if is_template_map(field_map):
         columns = [str(column) for column in field_map["columns"]]
-        renamed_files = resolve_filename_clashes(records)
-        check_unique_filenames(records)
-        assign_objectids(records, slugify(objectid_prefix) if objectid_prefix else "", used_dg_numbers(records))
+        if asset_rows_only:
+            renamed_files = prepare_asset_records(records)
+            previous = merge_asset_rows([], csv_path, columns, records, selected)
+            validate_asset_output(destination / "objects", records, previous)
+            skipped_records = [str(record["source_record_id"]) for record in selected if not record["_asset_items"]]
+            for source_id in skipped_records:
+                logging.getLogger("gems").warning("Skipping %s: item has no media; no asset or metadata row emitted.", source_id)
+        else:
+            renamed_files = resolve_filename_clashes(records)
+            check_unique_filenames(records)
+            assign_objectids(records, slugify(objectid_prefix) if objectid_prefix else "", used_dg_numbers(records))
         rows, exported_files = map_to_template(
             selected, field_map, destination / "objects", Path(legacy_mods_dir) if legacy_mods_dir else None,
-            refresh_source, progress=progress, is_cancelled=is_cancelled,
+            refresh_source, progress=progress, is_cancelled=is_cancelled, asset_rows_only=asset_rows_only,
         )
-        rows = merge_batch_rows(rows, csv_path, columns, records)
+        if asset_rows_only:
+            rows = merge_asset_rows(rows, csv_path, columns, records, selected)
+        else:
+            rows = merge_batch_rows(rows, csv_path, columns, records)
     else:
         columns = COLLECTIONBUILDER_FIELDS
         rows = normalize_records(
@@ -192,7 +219,84 @@ def process_records(
         last_record=start - 1 + len(selected),
         total_records=len(records),
         renamed_files=renamed_files,
+        skipped_records=skipped_records,
     )
+
+
+def prepare_asset_records(records: list[dict[str, Any]]) -> list[str]:
+    """Plan all filenames and folders before selecting a batch, without assigning DART IDs."""
+    names: set[str] = set()
+    folders: set[str] = set()
+    renamed: list[str] = []
+    for record in records:
+        items = representation_items(record)
+        for index, item in enumerate(items, start=1):
+            original = item["filename"]
+            candidate = original
+            suffix = 1
+            while candidate.casefold() in names:
+                path = Path(original)
+                tag = sha256(str(record["source_record_id"]).encode()).hexdigest()[:12]
+                sequence = COMPOUND_SEQUENCE.match(path.stem) if len(items) > 1 else None
+                if sequence:
+                    base, number = path.stem.rsplit("-", 1)
+                    candidate = f"{base}_{tag}_{suffix}-{number}{path.suffix}"
+                else:
+                    candidate = f"{path.stem}_{tag}_{index}_{suffix}{path.suffix}"
+                suffix += 1
+            if candidate != original:
+                renamed.append(candidate)
+            names.add(candidate.casefold())
+            item["filename"] = candidate
+        record["_asset_items"] = items
+        if not items:
+            continue
+        folder = safe_filename(record_folder(record, items, {}), 1)
+        base = folder
+        suffix = 1
+        while folder.casefold() in folders:
+            folder = f"{base}_{suffix}"
+            suffix += 1
+        folders.add(folder.casefold())
+        record["_asset_folder"] = folder
+    return renamed
+
+
+def validate_asset_output(
+    objects_dir: Path, records: list[dict[str, Any]], previous: list[dict[str, str]],
+) -> None:
+    expected = {
+        item["filename"]: objects_dir / record["_asset_folder"] / item["filename"]
+        for record in records for item in record["_asset_items"]
+    }
+    unexpected = {path for path in objects_dir.rglob("*") if path.is_file()} - set(expected.values())
+    if unexpected:
+        raise ValueError("The output objects folder contains assets outside this Omeka export; choose a fresh output folder.")
+    for row in previous:
+        if not expected[row["original_file_name"]].is_file():
+            raise ValueError(
+                f"Existing metadata references missing asset {row['original_file_name']}; "
+                "export that item's range again before continuing with other batches."
+            )
+
+
+def merge_asset_rows(
+    rows: list[dict[str, str]], csv_path: Path, columns: list[str],
+    records: list[dict[str, Any]], selected: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    expected = [item["filename"] for record in records for item in record["_asset_items"]]
+    replaced = {item["filename"] for record in selected for item in record["_asset_items"]}
+    merged: dict[str, dict[str, str]] = {}
+    if csv_path.exists():
+        with csv_path.open(encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            if reader.fieldnames != columns:
+                raise ValueError("Existing collection_metadata.csv has different columns; choose a fresh output folder.")
+            merged.update((row["original_file_name"], row) for row in reader if row["original_file_name"] not in replaced)
+        if set(merged) - set(expected):
+            raise ValueError("Existing CSV contains assets outside this Omeka export; choose a fresh output folder.")
+    merged.update((row["original_file_name"], row) for row in rows)
+    return [merged[name] for name in expected if name in merged]
 
 
 def merge_batch_rows(
@@ -488,17 +592,19 @@ def map_to_template(
     progress: ProgressCallback | None = None,
     is_cancelled: CancelCheck | None = None,
     metadata_only: bool = False,
+    asset_rows_only: bool = False,
 ) -> tuple[list[dict[str, str]], int]:
     """Build template rows; metadata_only skips asset I/O and rejects transcript conversions."""
     columns = [str(column) for column in template_map["columns"]]
     rules = template_map.get("rules", {})
-    assign_objectids(records, "", used_dg_numbers(records))
+    if not asset_rows_only:
+        assign_objectids(records, "", used_dg_numbers(records))
     if not metadata_only:
         objects_dir.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, str]] = []
     count = 0
     claimed_folders: dict[str, str] = {}
-    record_items = [representation_items(record) for record in records]
+    record_items = [record["_asset_items"] if asset_rows_only else representation_items(record) for record in records]
     if metadata_only and any(transcript_candidates(items) for items in record_items):
         raise ValueError("Metadata-only mapping does not support transcript assets; use the normal export workflow.")
     total_files = sum(len(items) for items in record_items)
@@ -509,13 +615,17 @@ def map_to_template(
         if is_cancelled is not None and is_cancelled():
             raise ExportCancelled()
         metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
-        record_id = str(record["objectid"])
+        record_id = str(record.get("objectid", ""))
         mods = legacy_mods_loader(metadata, legacy_mods_dir)
         # DART creates exactly one compound parent per folder, so every record's files go into
         # their own subfolder (one intellectual object per folder): a compound under its stem, a
         # single under its file's own stem. Unrelated records that share a filename base
         # (grinnell-310.pdf next to grinnell-1135.pdf) can then never be grouped by a DART scan.
-        subdir = objects_dir / record_folder(record, items, claimed_folders) if items else objects_dir
+        if asset_rows_only:
+            folder = record.get("_asset_folder", "")
+        else:
+            folder = record_folder(record, items, claimed_folders) if items else ""
+        subdir = objects_dir / folder
         for item in items:
             if metadata_only:
                 continue
@@ -524,14 +634,35 @@ def map_to_template(
             destination = subdir / item["filename"]
             if progress is not None:
                 progress(item["filename"], done, max(total_files, 1))
-            if not destination.exists():
+            if asset_rows_only or not destination.exists():
                 source = item["source"]
                 if refresh_source is not None and link_expired(source):
                     source = refresh_source(record, item)
                 subdir.mkdir(parents=True, exist_ok=True)
-                fetch_object(source, destination)
+                if asset_rows_only:
+                    with NamedTemporaryFile(dir=subdir, prefix=".gems-", delete=False) as handle:
+                        partial = Path(handle.name)
+                    try:
+                        fetch_object(source, partial)
+                        partial.replace(destination)
+                    except (OSError, ValueError) as exc:
+                        raise ValueError(f"Could not save {item['filename']} in {subdir}: {exc}") from exc
+                    finally:
+                        partial.unlink(missing_ok=True)
+                        partial.with_name(partial.name + ".part").unlink(missing_ok=True)
+                else:
+                    fetch_object(source, destination)
             done += 1
             count += 1
+        if asset_rows_only:
+            for item in items:
+                context = file_context(item)
+                row = build_template_row(columns, rules, record, metadata, context, mods, child=False)
+                row["original_file_name"] = item["filename"]
+                if "filename" in columns:
+                    row["filename"] = item["filename"]
+                rows.append(row)
+            continue
         media = [item for item in items if file_context(item)["display_template"] in {"audio", "video"}]
         transcripts = transcript_candidates(items)
         if (
@@ -569,6 +700,8 @@ def map_to_template(
                 context = file_context(item)
                 context.update(objectid=record["child_objectids"][item["filename"]], parentid=record_id)
                 rows.append(build_template_row(columns, rules, record, metadata, context, mods, child=True))
+    if asset_rows_only and progress is not None:
+        progress("", done, max(total_files, 1))
     return rows, count
 
 
@@ -688,7 +821,7 @@ def record_folder(record: dict[str, Any], items: list[dict[str, str]], claimed: 
     folder scan can only ever group a record's own files. A compound keeps its compound stem
     (objectid if somehow stemless); a single uses its file's stem, or the record's objectid when
     another record already claimed that folder name."""
-    record_id = str(record.get("objectid") or "")
+    record_id = str(record.get("objectid") or record.get("source_record_id") or "")
     if len(items) > 1:
         folder = compound_stem_for_items(items) or record_id
         claimed.setdefault(folder, record_id)
@@ -929,7 +1062,9 @@ def meaningful_anchor(record: dict[str, Any], names: list[str]) -> str:
     pid = next((value.strip() for value in identifiers if LEGACY_PID.match(value.strip())), "")
     if pid:
         return pid.replace(":", "_")
-    return slugify(stringify(metadata.get("dc:title") or metadata.get("dcterms:title")))[:40].strip("-")
+    return slugify(stringify(
+        metadata.get("dc:title") or metadata.get("dcterms:title") or record.get("source_record_id")
+    ))[:40].strip("-")
 
 
 GRINNELL_NUMBER = re.compile(r"grinnell_(\d+)")
@@ -954,7 +1089,7 @@ def compound_stem(record: dict[str, Any], names: list[str], anchor: str) -> str:
         return pid.replace(":", "_")
     if anchor and anchor not in GENERIC_COMPOUND_STEMS:
         return anchor
-    return stringify(record.get("objectid"))
+    return stringify(record.get("objectid") or record.get("source_record_id"))
 
 
 def safe_filename(filename: str, index: int) -> str:

@@ -1,0 +1,24 @@
+[
+  {
+    "id": 1,
+    "url": "https://classic.example.org/api/items/1",
+    "element_texts": [
+      {"element_set": {"name": "Dublin Core"}, "element": {"name": "Title"}, "text": "Campus photograph", "html": false},
+      {"element_set": {"name": "Dublin Core"}, "element": {"name": "Creator"}, "text": "Archives", "html": false},
+      {"element_set": {"name": "Dublin Core"}, "element": {"name": "Identifier"}, "text": "photo:1", "html": false}
+    ],
+    "files": {"count": 1, "url": "https://classic.example.org/api/files?item=1", "resource": "files"},
+    "files_list": [
+      {
+        "id": 10,
+        "original_filename": "Campus photo.jpg",
+        "filename": "2b42672de6e47a67698a52e1415bd2c0.jpg",
+        "mime_type": "image/jpeg",
+        "file_urls": {
+          "original": "https://classic.example.org/files/original/campus.jpg",
+          "fullsize": "https://classic.example.org/files/fullsize/campus.jpg"
+        }
+      }
+    ]
+  }
+]

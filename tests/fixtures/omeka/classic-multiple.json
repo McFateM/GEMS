@@ -1,0 +1,20 @@
+{
+  "items": [
+    {
+      "id": 2,
+      "url": "https://classic.example.org/api/items/2",
+      "element_texts": [
+        {"element": {"name": "Title"}, "text": "Ledger"},
+        {"element": {"name": "Subject"}, "text": "Campus"},
+        {"element": {"name": "Subject"}, "text": "History"},
+        {"element": {"name": "Subject"}, "text": ""},
+        {"element": {"name": "Date"}, "text": null},
+        {"element_set": {"name": "Item Type Metadata"}, "element": {"name": "Title"}, "text": "Not Dublin Core"}
+      ],
+      "files_list": [
+        {"original_filename": "Ledger 10.tif", "file_urls": {"original": "https://classic.example.org/files/original/page10.tif"}},
+        {"original_filename": "Ledger 2.tif", "file_urls": {"original": "https://classic.example.org/files/original/page2.tif"}}
+      ]
+    }
+  ]
+}
