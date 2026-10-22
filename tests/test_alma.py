@@ -132,6 +132,38 @@ class AlmaClientTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Found 0 Alma collections"):
                 client.resolve_collection(title)
 
+    def test_collection_titles_with_and_use_safe_search_and_exact_matching(self) -> None:
+        client = AlmaClient(api_key="test-key")
+        cases = [
+            ("Syllabi and Curricular Materials", "Curricular Materials"),
+            ("Grinnell and You Newsletter", "You Newsletter"),
+            ("Special Collections AND Archives", "Special Collections"),
+            ("Life And Art and Scholarship", "Scholarship"),
+            ("Sustainability and Prairie Studies Collection", "Prairie Studies Collection"),
+            ("Scholarship at Grinnell", "Scholarship at Grinnell"),
+            ("Scarlet & Black (S&B) Archives", "Scarlet & Black (S&B) Archives"),
+        ]
+        for title, term in cases:
+            with self.subTest(title=title), patch.object(client, "_get", return_value={"collection": [
+                {"name": "Other " + term, "pid": {"value": "other"}},
+                {"name": title, "pid": {"value": "8123"}},
+                {"name": title + " extra", "pid": {"value": "extra"}},
+            ]}) as get:
+                self.assertEqual(("8123", title), client.resolve_collection(title))
+                get.assert_called_once_with("/almaws/v1/bibs/collections",
+                                            params={"q": f"collection_name~{term}"})
+        title = "Syllabi and Curricular Materials"
+        with patch.object(client, "_get", return_value={"collection": [
+            {"name": "Curricular Materials", "pid": {"value": "other"}},
+        ]}):
+            with self.assertRaisesRegex(ValueError, "Found 0 Alma collections"):
+                client.resolve_collection(title)
+        with patch.object(client, "_get", return_value={"collection": [
+            {"name": title, "pid": {"value": pid}} for pid in ("1", "2")
+        ]}):
+            with self.assertRaisesRegex(ValueError, "Found 2 Alma collections"):
+                client.resolve_collection(title)
+
     def test_fetches_set_bib_metadata_and_linked_representation_files(self) -> None:
         session = FakeSession()
         client = AlmaClient(api_key="test-key", session=session)

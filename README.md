@@ -498,6 +498,11 @@ button 2. Progress and skipped-entry warnings go to stderr. Errors exit nonzero;
 headless retrieval does not silently redirect output to a local fallback folder.
 `--env-file /path/to/private.env` can replace `GEMS_ENV_FILE`.
 
+Collection titles containing the word `and` are searched using a portion without
+that word because Alma treats it as a query operator, even inside quoted values.
+GEMS still requires an exact, case-insensitive match against the full collection
+name; a partial match is never selected automatically.
+
 #### Button 1 for a list of collection titles
 
 Use [scripts/retrieve_collections.sh](scripts/retrieve_collections.sh), included
