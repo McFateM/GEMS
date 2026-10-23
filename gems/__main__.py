@@ -17,9 +17,9 @@ from .storage import Storage, load_environment
 
 def cli() -> int:
     parser = argparse.ArgumentParser(description="GEMS: Gather, Export, Map, Serialize")
-    parser.add_argument("--source", help="Path to an Alma / Specto manifest or Omeka JSON export")
+    parser.add_argument("--source", help="Path to an Alma / Specto manifest or Omeka JSON / CSV export")
     parser.add_argument("--source-type", choices=("alma", "omeka"), default="alma",
-                        help="Input adapter: alma (existing manifest workflow) or omeka (Classic or S JSON)")
+                        help="Input adapter: alma (existing manifest workflow) or omeka (Classic/S JSON or CSV)")
     parser.add_argument("--output", help="Existing parent directory for --retrieve; export directory for --source")
     parser.add_argument("--retrieve", action="store_true", help="Button 1: retrieve Alma records and save a JSON manifest")
     selection = parser.add_mutually_exclusive_group()

@@ -2,7 +2,7 @@
 
 GEMS: Gather, Export, Map, Serialize.
 
-The Linux/web, Omeka JSON import, and headless retrieval work has been merged
+The Linux/web, Omeka import, and headless retrieval work has been merged
 into `main`. Use **`main` on dg-landing** for normal operation; the older `linux`
 branch is no longer needed for these features. Use SSH for
 headless processing or the private Linux web interface; desktop modes remain
@@ -32,7 +32,7 @@ following those setup instructions.
 
 This repository now contains a small Flet-based application and headless pipeline for:
 - loading Alma Digital / Specto exports from JSON or CSV,
-- importing Omeka Classic or Omeka S JSON exports for DART,
+- importing Omeka Classic / Omeka S JSON and Omeka CSV exports for DART,
 - extracting digital-object identifiers, files, and structured metadata,
 - mapping source metadata into CollectionBuilder-oriented fields, and
 - writing a `collection_metadata.csv` plus exported objects and normalized JSON.
@@ -104,11 +104,11 @@ Before using button 1, set **Destination folder** in the Retrieve from Alma sect
 
 ## Import a prepared manifest
 
-### Import Omeka JSON for DART
+### Import Omeka CSV or JSON for DART
 
-Select **Omeka Classic / Omeka S JSON export** in **Input source** under
-**Map Manifest to CSV**. Choose the JSON export, enter an **Omeka output folder**,
-and use button 2. Omeka does not require Alma credentials or an Alma retrieval.
+Select **Omeka CSV / JSON export** in **Input source** under **Map Manifest to
+CSV**. Choose an Omeka CSV or JSON export, enter an **Omeka output folder**, and
+use button 2. Omeka does not require Alma credentials or an Alma retrieval.
 The selected source and Omeka destination are remembered. The existing Alma
 retrieval and export behavior is unchanged; selecting a newly retrieved Alma
 manifest switches the source back to Alma.
@@ -118,15 +118,22 @@ Headless equivalent, from the repository root using GEMS's virtual environment
 
 ```bash
 .venv/bin/python -m gems --headless --source-type omeka \
-  --source /path/to/omeka-export.json --output /path/to/fresh-output
+  --source /path/to/omeka-export.csv --output /path/to/fresh-output
 ```
 
 Use `.venv/bin/python` rather than the system `python3`, which may not have
 GEMS's dependencies installed. Alternatively, activate the environment with
 `source .venv/bin/activate` before using `python -m gems`.
 
-Accepted input is a single item, an array of items, or an object containing an
-`items`, `records`, or `data` array:
+The WMI Omeka S CSV export documented in
+[OMEKA-WMI-EXPORT.md](OMEKA-WMI-EXPORT.md) can be imported directly; its
+`o:media[file]` values are the direct original-file URLs used for downloads.
+CSV metadata values separated by the export's ` | ` delimiter are normalized
+to GEMS's `; ` repeated-value convention. Dublin Core and WMI properties are
+retained in normalized metadata.
+
+JSON input can be a single item, an array of items, or an object containing
+an `items`, `records`, or `data` array:
 
 - **Classic:** Dublin Core `element_texts`, with each entry's `element.name`
   and `text`; embedded file objects in `files_list` (or a `files` array).
@@ -135,7 +142,7 @@ Accepted input is a single item, an array of items, or an object containing an
   and embedded `o:media` objects containing `o:original_url`. Filenames come
   from `o:filename`, a filename-like `o:source`, or the download URL.
 
-Omeka S exports may contain only `@id` media API references in `o:media`.
+Omeka S JSON exports may contain only `@id` media API references in `o:media`.
 During export, GEMS automatically reads each referenced HTTP(S) API resource
 and uses its `o:original_url` and filename metadata. Resolution reports progress,
 checks cancellation between requests, uses a 30-second request timeout, and
@@ -144,11 +151,14 @@ once per run. The JSON input is not modified, and the UI range preview stays
 offline. Resolution currently covers all items before batch selection so naming
 remains stable across batches.
 
-Classic file listing links still need to be expanded into `files_list` before
-importing. Media APIs and asset URLs must be accessible without interactive
-authentication. API errors, invalid responses, and non-file media without an
-original URL stop the export with item/media context; API JSON is never saved
-as an asset.
+The Omeka CSV format requires `o:id` and `o:media[file]` columns and supports
+the pipe-delimited media URL and metadata values produced by the documented
+Bulk Export settings. Classic file listing links still need to be expanded
+into `files_list` before importing. Media APIs and asset URLs must be accessible
+without interactive authentication. For JSON imports, API errors, invalid
+responses, and non-file media without an original URL stop the export with
+item/media context; API JSON is never saved as an asset. Malformed JSON or CSV,
+download failures, and write failures also stop the export.
 Local `file://` asset URLs are also supported.
 Representative, documented-shape fixtures are in
 [tests/fixtures/omeka](tests/fixtures/omeka/README.md).
@@ -713,7 +723,7 @@ the UI. Omit `--limit` to map all remaining records. Repeat with `--start 101`,
 etc., to merge batches. Optional `--objectid-prefix`, `--legacy-mods`, and
 `--field-map` provide the corresponding mapping controls.
 
-For either Omeka Classic or Omeka S JSON, button 1 is unnecessary:
+For Omeka Classic / Omeka S JSON or CSV, button 1 is unnecessary:
 
 ```bash
 .venv/bin/python -m gems --headless --source-type omeka \
@@ -721,7 +731,7 @@ For either Omeka Classic or Omeka S JSON, button 1 is unnecessary:
   --output "$HOME/gems-pilot/data/omeka-output"
 ```
 
-In the Linux browser UI, choose **Omeka Classic / Omeka S JSON export** under
+In the Linux browser UI, choose **Omeka CSV / JSON export** under
 **Input source** and supply an existing **Omeka output folder** inside
 `GEMS_DATA_DIR`. Alma-only prefix and legacy-MODS controls are disabled.
 

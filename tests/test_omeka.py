@@ -111,6 +111,56 @@ class OmekaTests(unittest.TestCase):
             self.assertEqual("omeka_s", row["source_system"])
         self.assertTrue(rows[0]["original_file_name"].startswith("Interview"))
 
+    def test_wmi_csv_export_loads_metadata_and_direct_media_urls(self):
+        self.source = self.root / "wmi-export.csv"
+        headers = [
+            "o:id", "o:media[o:id]", "o:media[file]", "dcterms:title",
+            "dcterms:creator", "wmi:instrumentCategory",
+        ]
+        with self.source.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=headers)
+            writer.writeheader()
+            writer.writerow({
+                "o:id": "626",
+                "o:media[o:id]": "676 | 678",
+                "o:media[file]": (
+                    "https://omeka.example/original/cover.jpg | "
+                    "https://omeka.example/original/audio.mp3"
+                ),
+                "dcterms:title": "Rebab",
+                "dcterms:creator": "Maker One | Maker Two",
+                "wmi:instrumentCategory": "chordophone",
+            })
+        records = load_omeka(self.source)
+        self.assertEqual(1, len(records))
+        record = records[0]
+        self.assertEqual("626", record["originating_system_id"])
+        self.assertEqual("omeka_s-626-1", record["source_record_id"])
+        self.assertEqual("Rebab", record["metadata"]["title"])
+        self.assertEqual("Maker One; Maker Two", record["metadata"]["creator"])
+        self.assertEqual("chordophone", record["metadata"]["wmi:instrumentCategory"])
+        self.assertEqual([
+            {"source": "https://omeka.example/original/cover.jpg", "filename": "cover.jpg"},
+            {"source": "https://omeka.example/original/audio.mp3", "filename": "audio.mp3"},
+        ], record["files"])
+        self.assertEqual(2, len(load_omeka(self.source)[0]["files"]))
+
+    def test_actual_wmi_csv_export_processes_item_and_downloads_direct_urls(self):
+        source = ROOT / "CSV-20261023-022505.csv"
+        records = load_omeka(source)
+        self.assertEqual(656, len(records))
+        self.assertEqual(1877, sum(len(record["files"]) for record in records))
+        self.assertEqual("626", records[0]["originating_system_id"])
+        self.assertEqual(2, len(records[0]["files"]))
+        self.assertEqual("chordophone", records[0]["metadata"]["wmi:instrumentCategory"])
+        with patch("gems.pipeline.urlretrieve", side_effect=self.download):
+            result = process_export(source, self.output, source_type="omeka", start=1, limit=1)
+        rows, assets = self.assert_assets(result)
+        self.assertEqual(2, len(rows))
+        self.assertEqual({"rebab"}, {row["title"].strip() for row in rows})
+        self.assertEqual({"omeka_s"}, {row["source_system"] for row in rows})
+        self.assertEqual(2, len(assets))
+
     def test_template_mapping_reuses_rules_but_never_creates_ids_or_parents(self):
         template = json.loads((ROOT / "maps" / "alma-dc-to-grinnell.json").read_text())
         with patch("gems.pipeline.assign_objectids", side_effect=AssertionError("must not assign IDs")):
@@ -235,7 +285,7 @@ class OmekaTests(unittest.TestCase):
         self.assertEqual((0, 0), (result.row_count, result.file_count))
         self.source = self.root / "export.csv"
         self.source.write_text("title\nNot JSON\n", encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "must be a JSON export"):
+        with self.assertRaisesRegex(ValueError, "missing required column"):
             process_export(self.source, self.output, source_type="omeka")
 
     def test_download_and_write_failures_emit_no_csv_and_remove_partial_files(self):
@@ -391,7 +441,15 @@ class OmekaTests(unittest.TestCase):
         self.assertIn("Malformed Omeka JSON", stderr.getvalue())
 
     def test_ui_selects_omeka_exports_to_configured_folder_without_alma(self):
-        self.write_source(self.fixture("classic-single.json"))
+        self.source = self.root / "source.csv"
+        with self.source.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=["o:id", "o:media[file]", "dcterms:title"])
+            writer.writeheader()
+            writer.writerow({
+                "o:id": "626",
+                "o:media[file]": "https://omeka.example/original/cover.jpg",
+                "dcterms:title": "Rebab",
+            })
         with (
             patch("gems.app.LOG_PATH", self.root / "gems.log"),
             patch("gems.app.load_dotenv"),

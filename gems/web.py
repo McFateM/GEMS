@@ -30,7 +30,7 @@ def main(page: ft.Page, service: JobService) -> None:
     source_type = ft.Dropdown(
         label="Input source", value=preferences.get("source_type", "alma"),
         options=[ft.dropdown.Option("alma", "Alma / Specto prepared manifest"),
-                 ft.dropdown.Option("omeka", "Omeka Classic / Omeka S JSON export")],
+                 ft.dropdown.Option("omeka", "Omeka CSV / JSON export")],
     )
     omeka_output = ft.TextField(
         label="Omeka output folder (existing server directory inside GEMS_DATA_DIR)",
@@ -127,7 +127,7 @@ def main(page: ft.Page, service: JobService) -> None:
         omeka = source_type.value == "omeka"
         omeka_output.visible = omeka
         legacy.disabled = prefix.disabled = legacy.disabled or omeka
-        source.label = "Omeka JSON export (server path)" if omeka else "Prepared manifest (server JSON or CSV path)"
+        source.label = "Omeka CSV / JSON export (server path)" if omeka else "Prepared manifest (server JSON or CSV path)"
         retrieve_button.disabled = export_button.disabled = not operator or busy or bool(service.storage_error)
         cancel_button.disabled = not operator or not busy or bool(service.storage_error)
         if not operator:

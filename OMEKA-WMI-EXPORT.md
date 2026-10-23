@@ -189,8 +189,8 @@ They used the storage path:
 https://digital-grinnell.nyc3.digitaloceanspaces.com/omeka-s/digital-grinnell/original/
 ```
 
-The local CSV begins with a UTF-8 byte-order mark (BOM). Future readers should
-handle that explicitly so that the first header is recognized as `o:id`.
+The local CSV begins with a UTF-8 byte-order mark (BOM); GEMS reads it with
+`utf-8-sig` so that the first header is recognized as `o:id`.
 Descriptions contain embedded newlines, so physical line counts are not item
 counts; use a real CSV parser.
 
@@ -243,39 +243,25 @@ The sampled file media also retained old `omeka1.grinnell.edu` ingest sources.
 Those are not the current DigitalOcean original URLs and should not replace
 the exported file links.
 
-## 8. What this means for GEMS
+## 8. GEMS CSV import
 
 The export solves the immediate need to obtain metadata and direct file URLs
 without depending on media API resolution during later downloads.
 
-It does **not** by itself complete GEMS integration:
+GEMS now accepts this Omeka S CSV directly:
 
-- As documented in the [README](./README.md), the existing Omeka JSON path
-  supports embedded `o:media` entries containing `o:original_url`, or resolves
-  media API references to obtain those fields.
-- This CSV is not a drop-in replacement for that JSON input.
-- A conversion or CSV importer adjustment remains necessary before using it
-  through that workflow.
-- A converter must preserve WMI-specific properties, multi-valued metadata,
-  and item-to-file associations.
-- Preserve the distinction between Omeka's internal `o:id` and descriptive
-  identifiers such as `dcterms:identifier`.
-- Exported linked-resource values use IDs under this run's settings; they
-  should not be assumed to be fully expanded resource descriptions.
-- Recovering HTML media or exact media-ID-to-file associations requires
-  additional data; this CSV alone does not establish those relationships.
+- The importer reads the `o:id`, metadata properties, and direct media URLs
+  from `o:media[file]`; URLs separated by the configured ` | ` delimiter are
+  treated as multiple files for the same item.
+- Dublin Core and WMI properties are retained in normalized metadata, and
+  repeated property values use GEMS's `; ` convention.
+- It does not pair media IDs to file URLs by position. Some media records are
+  HTML entries without originals, so the number of attached media IDs can be
+  greater than the number of downloadable URLs.
 
-Suggested next steps, not performed during this session:
-
-1. Choose whether to convert the CSV into the existing GEMS-supported input
-   shape or add explicit CSV support.
-2. Define handling for custom WMI metadata and non-file media.
-3. Test direct-file access from the actual GEMS processing host.
-4. Run a small end-to-end import/download test, including a multi-file item.
-5. Validate the complete URL inventory before declaring all media retrieved.
-
-No GEMS application code, importer behavior, or Omeka access-control settings
-were changed as part of this export work.
+Import support does not establish that every original URL is reachable from
+the target GEMS host or that the complete collection has been downloaded.
+Validate access and review the resulting file inventory after processing.
 
 ## References
 

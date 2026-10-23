@@ -89,7 +89,7 @@ def main(page: ft.Page) -> None:
         value=settings.get("source_type", "alma"),
         options=[
             ft.dropdown.Option("alma", "Alma / Specto prepared manifest"),
-            ft.dropdown.Option("omeka", "Omeka Classic / Omeka S JSON export"),
+            ft.dropdown.Option("omeka", "Omeka CSV / JSON export"),
         ],
         on_change=lambda _: update_source_type(),
     )
@@ -228,7 +228,7 @@ def main(page: ft.Page) -> None:
         omeka = source_type.value == "omeka"
         omeka_output.visible = omeka
         prefix_field.disabled = legacy_mods_field.disabled = omeka
-        source_field.label = "Omeka JSON export" if omeka else "Prepared export manifest"
+        source_field.label = "Omeka CSV / JSON export" if omeka else "Prepared export manifest"
         if persist:
             update_settings()
         else:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,10 @@ def load_omeka(
     source: Path, *, resolve_media: bool = False,
     progress: ProgressCallback | None = None, is_cancelled: CancelCheck | None = None,
 ) -> list[dict[str, Any]]:
+    if source.suffix.lower() == ".csv":
+        return _load_omeka_csv(source, is_cancelled=is_cancelled)
+    if source.suffix.lower() != ".json":
+        raise ValueError("Omeka input must be a JSON or CSV export.")
     with requests.Session() as session:
         retries = Retry(total=3, backoff_factor=0.5, status_forcelist=(429, 500, 502, 503, 504),
                         allowed_methods=frozenset({"GET"}))
@@ -37,8 +42,6 @@ def _load_omeka(
     source: Path, session: requests.Session, *, resolve_media: bool,
     progress: ProgressCallback | None, is_cancelled: CancelCheck | None,
 ) -> list[dict[str, Any]]:
-    if source.suffix.lower() != ".json":
-        raise ValueError("Omeka input must be a JSON export.")
     try:
         payload = json.loads(source.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError as exc:
@@ -145,6 +148,69 @@ def _load_omeka(
             "source_record_url": stringify(item.get("@id") or item.get("url")),
             "originating_system_id": source_id,
         })
+    return records
+
+
+def _load_omeka_csv(source: Path, *, is_cancelled: CancelCheck | None) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    try:
+        with source.open(encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle, strict=True)
+            headers = reader.fieldnames
+            if not headers or len(headers) != len(set(headers)):
+                raise ValueError("Omeka CSV must have a header row with unique column names.")
+            required = {"o:id", "o:media[file]"}
+            missing = required.difference(headers)
+            if missing:
+                raise ValueError(f"Omeka CSV is missing required column(s): {', '.join(sorted(missing))}.")
+            for index, row in enumerate(reader, start=1):
+                if is_cancelled is not None and is_cancelled():
+                    raise ExportCancelled()
+                if None in row:
+                    raise ValueError(f"Malformed Omeka CSV at row {index + 1}: too many values for the header.")
+                source_id = stringify(row.get("o:id"))
+                metadata: dict[str, str] = {}
+                for header in headers:
+                    if not header.startswith(("dc:", "dcterms:", "wmi:", "lrmi:")):
+                        continue
+                    raw_value = row.get(header) or ""
+                    values_for_field = list(dict.fromkeys(
+                        value.strip() for value in raw_value.split(" | ") if value.strip()
+                    ))
+                    if not values_for_field:
+                        continue
+                    value = "; ".join(values_for_field)
+                    name = header.split(":", 1)[1]
+                    metadata[name] = value
+                    metadata[header] = value
+                    if header.startswith(("dc:", "dcterms:")):
+                        metadata[f"dc:{name}"] = value
+                        metadata[f"dcterms:{name}"] = value
+
+                files: list[dict[str, str]] = []
+                raw_urls = row.get("o:media[file]") or ""
+                for media_index, url in enumerate(
+                    (value.strip() for value in raw_urls.split(" | ") if value.strip()), start=1,
+                ):
+                    if is_cancelled is not None and is_cancelled():
+                        raise ExportCancelled()
+                    if urlparse(url).scheme not in {"http", "https", "file"}:
+                        raise ValueError(
+                            f"omeka_s item {source_id or f'at row {index + 1}'}, media {media_index}: "
+                            "CSV media URL must use HTTP(S) or file://."
+                        )
+                    filename = Path(unquote(urlparse(url).path)).name
+                    files.append({"source": url, "filename": filename or f"object-{media_index}"})
+                records.append({
+                    "metadata": metadata,
+                    "files": files,
+                    "source_system": "omeka_s",
+                    "source_record_id": f"omeka_s-{source_id or 'item'}-{index}",
+                    "source_record_url": "",
+                    "originating_system_id": source_id,
+                })
+    except csv.Error as exc:
+        raise ValueError(f"Malformed Omeka CSV: {exc}") from exc
     return records
 
 
