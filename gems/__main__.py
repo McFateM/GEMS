@@ -20,6 +20,8 @@ def cli() -> int:
     parser.add_argument("--source", help="Path to an Alma / Specto manifest or Omeka JSON / CSV export")
     parser.add_argument("--source-type", choices=("alma", "omeka"), default="alma",
                         help="Input adapter: alma (existing manifest workflow) or omeka (Classic/S JSON or CSV)")
+    parser.add_argument("--skip-download-errors", action="store_true",
+                        help="Omeka only: skip HTTP/network download failures and append download_errors.csv")
     parser.add_argument("--output", help="Existing parent directory for --retrieve; export directory for --source")
     parser.add_argument("--retrieve", action="store_true", help="Button 1: retrieve Alma records and save a JSON manifest")
     selection = parser.add_mutually_exclusive_group()
@@ -50,6 +52,8 @@ def cli() -> int:
     parser.add_argument("--env-file", help="Private environment file, e.g. on a protected network share")
     parser.add_argument("--init-storage", action="store_true", help="Initialize markers in configured storage roots, then exit")
     args = parser.parse_args()
+    if args.skip_download_errors and (args.source_type != "omeka" or not args.source or args.retrieve):
+        parser.error("--skip-download-errors requires an Omeka --source export")
     try:
         load_environment(args.env_file)
         if args.init_storage:
@@ -129,6 +133,7 @@ def cli() -> int:
                 legacy_mods_dir=args.legacy_mods,
                 start=args.start,
                 limit=args.limit,
+                skip_download_errors=args.skip_download_errors,
                 objectid_prefix=args.objectid_prefix,
                 refresh_source=AlmaClient().refresh_file_link if args.source_type == "alma" and os.getenv("ALMA_API_KEY") else None,
             )
@@ -140,6 +145,12 @@ def cli() -> int:
         )
         if result.skipped_records:
             print(f"Skipped {len(result.skipped_records)} item(s) without media: {', '.join(result.skipped_records)}")
+        if result.failed_downloads:
+            print(
+                f"WARNING: incomplete export; skipped {len(result.failed_downloads)} failed download(s). "
+                f"Error report: {result.download_errors_path}",
+                file=sys.stderr,
+            )
         return 0
 
     if args.web:

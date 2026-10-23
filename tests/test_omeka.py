@@ -323,6 +323,88 @@ class OmekaTests(unittest.TestCase):
         self.assertEqual(1, len([path for path in self.output.rglob("*") if path.is_file()]))
         self.assertFalse((self.output / "collection_metadata.csv").exists())
 
+    def test_skip_download_errors_keeps_good_files_and_reports_each_failure(self):
+        payload = self.fixture("classic-multiple.json")
+        self.write_source(payload)
+        calls = []
+
+        def download(url, destination):
+            calls.append(url)
+            if len(calls) == 1:
+                Path(destination).write_bytes(b"partial download")
+                raise HTTPError(url, 403, "Forbidden", {}, None)
+            return self.download(url, destination)
+
+        with patch("gems.pipeline.urlretrieve", side_effect=download), self.assertLogs("gems", level="WARNING"):
+            result = process_export(self.source, self.output, source_type="omeka", skip_download_errors=True)
+        rows, assets = self.assert_assets(result)
+        self.assertEqual((1, 1, 2), (result.row_count, result.file_count, len(calls)))
+        self.assertEqual(1, len(result.failed_downloads))
+        with result.download_errors_path.open(encoding="utf-8", newline="") as handle:
+            errors = list(csv.DictReader(handle))
+        self.assertEqual(result.failed_downloads, errors)
+        self.assertEqual("403", errors[0]["http_status"])
+        self.assertEqual(calls[0], errors[0]["url"])
+        self.assertEqual("Ledger", errors[0]["title"])
+        self.assertNotEqual(errors[0]["filename"], rows[0]["original_file_name"])
+        self.assertFalse(any(".gems-" in path.name or path.name.endswith(".part") for path in assets))
+        recovered = self.export(payload, skip_download_errors=True)
+        self.assertEqual((2, 2), (recovered.row_count, recovered.file_count))
+        self.assertEqual([], recovered.failed_downloads)
+        with (self.output / "download_errors.csv").open(encoding="utf-8", newline="") as handle:
+            self.assertEqual(errors, list(csv.DictReader(handle)))
+
+    def test_skip_download_errors_does_not_hide_local_write_errors(self):
+        self.write_source(self.fixture("classic-single.json"))
+        with patch("gems.pipeline.urlretrieve", side_effect=PermissionError("read-only filesystem")):
+            with self.assertRaisesRegex(ValueError, "read-only filesystem"):
+                process_export(self.source, self.output, source_type="omeka", skip_download_errors=True)
+        self.assertFalse((self.output / "collection_metadata.csv").exists())
+        self.assertFalse((self.output / "download_errors.csv").exists())
+
+    def test_skip_network_errors_appends_report_across_batches_and_retries(self):
+        payload = self.fixture("classic-single.json") + self.fixture("s-media.json")
+        self.write_source(payload)
+        with patch("gems.pipeline.urlretrieve", side_effect=URLError("unreachable")), self.assertLogs("gems"):
+            first = process_export(
+                self.source, self.output, source_type="omeka", skip_download_errors=True, start=1, limit=1,
+            )
+            second = process_export(
+                self.source, self.output, source_type="omeka", skip_download_errors=True, start=2, limit=1,
+            )
+        self.assertEqual((0, 0), (first.row_count, second.row_count))
+        with (self.output / "download_errors.csv").open(encoding="utf-8", newline="") as handle:
+            failures = list(csv.DictReader(handle))
+        self.assertEqual(3, len(failures))
+        self.assertEqual({"1", "3"}, {failure["originating_system_id"] for failure in failures})
+        self.assertEqual({""}, {failure["http_status"] for failure in failures})
+        self.assert_assets(second)
+
+    def test_skip_download_errors_report_write_failure_stops_export(self):
+        self.write_source(self.fixture("classic-single.json"))
+        self.output.mkdir()
+        (self.output / "download_errors.csv").mkdir()
+        with patch("gems.pipeline.urlretrieve", side_effect=URLError("unreachable")):
+            with self.assertRaises(OSError):
+                process_export(self.source, self.output, source_type="omeka", skip_download_errors=True)
+        self.assertFalse((self.output / "collection_metadata.csv").exists())
+
+    def test_cli_skip_download_errors_warns_and_excludes_failed_asset(self):
+        self.write_source(self.fixture("classic-single.json"))
+        with (
+            patch("sys.argv", ["gems", "--headless", "--source-type", "omeka",
+                               "--source", str(self.source), "--output", str(self.output),
+                               "--skip-download-errors"]),
+            patch("gems.pipeline.urlretrieve", side_effect=URLError("unreachable")),
+            self.assertLogs("gems"),
+            redirect_stdout(io.StringIO()) as stdout,
+            redirect_stderr(io.StringIO()) as stderr,
+        ):
+            self.assertEqual(0, cli())
+        self.assertIn("0 row(s), 0 file(s)", stdout.getvalue())
+        self.assertIn("incomplete export; skipped 1 failed download(s)", stderr.getvalue())
+        self.assertIn(str(self.output / "download_errors.csv"), stderr.getvalue())
+
     def test_incompatible_output_is_rejected_before_downloading(self):
         payload = self.fixture("classic-single.json")
         self.export(payload)

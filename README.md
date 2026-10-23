@@ -191,6 +191,37 @@ to every physical file, omits ID columns, and forces `original_file_name` to the
 actual basename. It does not apply Alma child-row rules or legacy MODS fallbacks.
 The default mapping needs no field map and uses canonical unprefixed columns.
 
+#### Continue past unavailable Omeka originals
+
+Headless Omeka imports normally stop at the first download error. To retain
+successful files and continue past HTTP errors (including 403/404), network
+connection failures, or timeouts, add `--skip-download-errors`:
+
+```bash
+.venv/bin/python -u -m gems --headless --source-type omeka \
+  --source CSV-20261023-022505.csv --output /path/to/wmi-output \
+  --start 2 --skip-download-errors
+```
+
+Only the failed file is skipped, not the item's other originals. No metadata
+row is emitted for a failed download, and incomplete temporary files are
+removed. Each failure is immediately appended to `download_errors.csv` in
+the output directory with a UTC timestamp, item identity/title, planned
+filename, source URL, HTTP status (when available), and error message.
+Warnings appear during processing and in the final CLI summary. An export
+with skipped downloads is incomplete even when the command exits normally;
+its row/file count will be lower than the source URL inventory.
+
+The report is an append-only attempt history retained across batches and
+retries, not a list of currently unresolved failures. After fixing access,
+rerun the affected source record range in the same output folder to merge
+recovered files and metadata. Earlier report entries remain for auditing.
+Local disk/permission errors, report-write errors, malformed input, and JSON
+media-API resolution failures still stop the run. A failed refresh of an
+already-existing asset also stops rather than leaving an untracked file in
+the DART input; preserve that existing file outside the output before retrying.
+Without this headless flag, desktop, web, and CLI behavior remains fail-fast.
+
 **Start record** and **Record limit** retain their existing 1-based meanings.
 Naming is planned across the entire input before selecting a batch, keeping
 filenames stable. Subsequent batches merge by `original_file_name` in input

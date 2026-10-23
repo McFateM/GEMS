@@ -10,13 +10,15 @@ import shutil
 import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from functools import cache
 from hashlib import sha256
+from http.client import IncompleteRead
 from itertools import chain
 from pathlib import Path, PurePosixPath
 from tempfile import NamedTemporaryFile
 from typing import Any
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, unquote, urlparse
 from urllib.request import urlretrieve
 
@@ -79,6 +81,8 @@ class ExportResult:
     total_records: int = 0
     renamed_files: list[str] = field(default_factory=list)
     skipped_records: list[str] = field(default_factory=list)
+    failed_downloads: list[dict[str, str]] = field(default_factory=list)
+    download_errors_path: Path | None = None
 
 
 RefreshSource = Callable[[dict[str, Any], dict[str, str]], str]
@@ -88,6 +92,13 @@ CancelCheck = Callable[[], bool]
 
 class ExportCancelled(Exception):
     """Raised when the user cancels a map-and-export run; partial output stays on disk."""
+
+
+class DownloadError(ValueError):
+    """An HTTP or network failure, distinct from a local filesystem failure."""
+
+
+DownloadErrorCallback = Callable[[dict[str, Any], dict[str, str], DownloadError], None]
 
 
 def process_export(
@@ -104,6 +115,7 @@ def process_export(
     objectid_prefix: str | None = None,
     progress: ProgressCallback | None = None,
     is_cancelled: CancelCheck | None = None,
+    skip_download_errors: bool = False,
 ) -> ExportResult:
     source = Path(source_path)
     if source_type == "omeka":
@@ -114,7 +126,10 @@ def process_export(
             output_dir, field_map=asset_field_map(field_map),
             start=start, limit=limit, progress=progress, is_cancelled=is_cancelled,
             asset_rows_only=True,
+            skip_download_errors=skip_download_errors,
         )
+    if skip_download_errors:
+        raise ValueError("Skipping download errors is supported only for Omeka exports.")
     if source_type != "alma":
         raise ValueError(f"Unsupported input source: {source_type}")
     renamed: list[str] = []
@@ -166,7 +181,10 @@ def process_records(
     progress: ProgressCallback | None = None,
     is_cancelled: CancelCheck | None = None,
     asset_rows_only: bool = False,
+    skip_download_errors: bool = False,
 ) -> ExportResult:
+    if skip_download_errors and not asset_rows_only:
+        raise ValueError("Skipping download errors requires an Omeka asset-only export.")
     if start < 1 or (limit is not None and limit < 1):
         raise ValueError("Start record and record limit must be positive whole numbers.")
     if records and start > len(records):
@@ -177,6 +195,35 @@ def process_records(
     json_path = destination / "normalized_records.json"
     renamed_files: list[str] = []
     skipped_records: list[str] = []
+    failed_downloads: list[dict[str, str]] = []
+    errors_path = destination / "download_errors.csv"
+
+    def record_download_error(record: dict[str, Any], item: dict[str, str], error: DownloadError) -> None:
+        cause = error.__cause__
+        failure = {
+            "attempted_at": datetime.now(timezone.utc).isoformat(),
+            "source_record_id": stringify(record.get("source_record_id")),
+            "originating_system_id": stringify(record.get("originating_system_id")),
+            "title": stringify(record.get("metadata", {}).get("title")),
+            "filename": item["filename"],
+            "url": item["source"],
+            "http_status": str(cause.code) if isinstance(cause, HTTPError) else "",
+            "error": str(error),
+        }
+        if errors_path.exists() and errors_path.stat().st_size:
+            with errors_path.open(encoding="utf-8", newline="") as handle:
+                if next(csv.reader(handle)) != list(failure):
+                    raise ValueError(f"Incompatible download error report: {errors_path}")
+        else:
+            with errors_path.open("w", encoding="utf-8", newline="") as handle:
+                csv.DictWriter(handle, fieldnames=list(failure)).writeheader()
+        with errors_path.open("a", encoding="utf-8", newline="") as handle:
+            csv.DictWriter(handle, fieldnames=list(failure)).writerow(failure)
+        failed_downloads.append(failure)
+        logging.getLogger("gems").warning(
+            "Skipping failed download for %s (%s), %s: %s. Recorded in %s",
+            failure["source_record_id"], failure["title"], item["source"], error, errors_path,
+        )
     if is_template_map(field_map):
         columns = [str(column) for column in field_map["columns"]]
         if asset_rows_only:
@@ -193,6 +240,7 @@ def process_records(
         rows, exported_files = map_to_template(
             selected, field_map, destination / "objects", Path(legacy_mods_dir) if legacy_mods_dir else None,
             refresh_source, progress=progress, is_cancelled=is_cancelled, asset_rows_only=asset_rows_only,
+            on_download_error=record_download_error if skip_download_errors else None,
         )
         if asset_rows_only:
             rows = merge_asset_rows(rows, csv_path, columns, records, selected)
@@ -220,6 +268,8 @@ def process_records(
         total_records=len(records),
         renamed_files=renamed_files,
         skipped_records=skipped_records,
+        failed_downloads=failed_downloads,
+        download_errors_path=errors_path if failed_downloads else None,
     )
 
 
@@ -515,14 +565,18 @@ def fetch_object(source: str, destination: Path) -> None:
             urlretrieve(source, partial)
         except HTTPError as error:
             partial.unlink(missing_ok=True)
+            error.close()
             expires = parse_qs(parsed.query).get("Expires", [""])[0]
             if error.code == 403 and expires.isdigit() and int(expires) < time.time():
-                raise ValueError(
+                raise DownloadError(
                     f"The download link for {destination.name} expired at "
                     f"{time.strftime('%Y-%m-%d %H:%M:%S %Z', time.localtime(int(expires)))}. "
                     "Retrieve the records again to create a manifest with fresh links."
                 ) from error
-            raise ValueError(f"Could not download {destination.name}: {error}") from error
+            raise DownloadError(f"Could not download {destination.name}: {error}") from error
+        except (URLError, TimeoutError, ConnectionError, IncompleteRead) as error:
+            partial.unlink(missing_ok=True)
+            raise DownloadError(f"Could not download {destination.name}: {error}") from error
         partial.replace(destination)
     elif parsed.scheme == "file":
         shutil.copy2(Path(unquote(parsed.path)), destination)
@@ -593,6 +647,7 @@ def map_to_template(
     is_cancelled: CancelCheck | None = None,
     metadata_only: bool = False,
     asset_rows_only: bool = False,
+    on_download_error: DownloadErrorCallback | None = None,
 ) -> tuple[list[dict[str, str]], int]:
     """Build template rows; metadata_only skips asset I/O and rejects transcript conversions."""
     columns = [str(column) for column in template_map["columns"]]
@@ -626,6 +681,7 @@ def map_to_template(
         else:
             folder = record_folder(record, items, claimed_folders) if items else ""
         subdir = objects_dir / folder
+        successful_items: list[dict[str, str]] = []
         for item in items:
             if metadata_only:
                 continue
@@ -645,6 +701,17 @@ def map_to_template(
                     try:
                         fetch_object(source, partial)
                         partial.replace(destination)
+                    except DownloadError as exc:
+                        if on_download_error is None:
+                            raise ValueError(f"Could not save {item['filename']} in {subdir}: {exc}") from exc
+                        on_download_error(record, item, exc)
+                        if destination.exists():
+                            raise ValueError(
+                                f"Cannot skip failed refresh of existing asset {destination}; "
+                                "preserve it outside the export before retrying."
+                            ) from exc
+                        done += 1
+                        continue
                     except (OSError, ValueError) as exc:
                         raise ValueError(f"Could not save {item['filename']} in {subdir}: {exc}") from exc
                     finally:
@@ -654,8 +721,9 @@ def map_to_template(
                     fetch_object(source, destination)
             done += 1
             count += 1
+            successful_items.append(item)
         if asset_rows_only:
-            for item in items:
+            for item in successful_items:
                 context = file_context(item)
                 row = build_template_row(columns, rules, record, metadata, context, mods, child=False)
                 row["original_file_name"] = item["filename"]
