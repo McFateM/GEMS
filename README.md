@@ -655,6 +655,52 @@ button 2 commands have already completed.
 
 #### Button 2: map an existing manifest and download its objects
 
+##### Shortening collection ObjectID prefixes
+
+Edit the second column of [objectid-prefixes.tsv](objectid-prefixes.tsv) to
+choose collection prefixes. Keep the first column and header unchanged; use
+unique lowercase, hyphen-separated slugs. Identical columns mean no rename.
+Run [scripts/rename_objectid_prefixes.py](scripts/rename_objectid_prefixes.py)
+on dg-landing while no retrieval, export, or metadata job is writing to the
+active runs:
+
+```bash
+cd ~/GitHub/GEMS
+# Preview and validate the complete change set:
+.venv/bin/python scripts/rename_objectid_prefixes.py \
+  --mapping objectid-prefixes.tsv --data-root /data/gems/data
+# Back up, apply, and verify:
+.venv/bin/python scripts/rename_objectid_prefixes.py \
+  --mapping objectid-prefixes.tsv --data-root /data/gems/data --apply
+```
+
+The script updates IDs in active `collection-*/*/gems_*.json` manifests and
+their adjacent `collection_metadata.csv` and `normalized_records.json`.
+It preserves numeric suffixes and updates parent/child references together.
+It also sets each manifest's `objectid_prefix` and corrects or adds
+`--objectid-prefix` in saved `button-2-commands-*` scripts. It does not execute
+those commands. Existing bare `dg_<number>` IDs are not assigned new prefixes.
+Collection directories, media, logs, historical `migrated/` data, and old
+backups are not renamed or edited.
+
+Dry run is the default. Apply backs up every changed file, preserving relative
+paths, under `/data/gems/data/.objectid-prefix-backups/<timestamp>-<unique>/`
+and saves the mapping there as `mapping.tsv`. The backup location is printed
+before any replacement. Each file is replaced atomically, but the whole batch
+is not a transaction; if interrupted, inspect the reported backup before
+resuming or restoring its corresponding files to the data root. Do not restore
+the backup's `mapping.tsv` into the data root. Keep all writers stopped while
+restoring. A successful apply verifies the writes and a second pass with zero
+remaining changes. The script locks out concurrent instances of itself, not
+other GEMS jobs.
+
+Changing only `--objectid-prefix` on a normal button 2 command does not rename
+already assigned IDs, and editing only normalized JSON leaves other metadata
+inconsistent. Future retrievals still generate long title-based prefixes:
+rerun this script after retrieving new manifests and before exporting them.
+
+##### Running the export
+
 ```bash
 .venv/bin/python -m gems --headless \
   --source /path/printed/by/button-1/manifest.json \
