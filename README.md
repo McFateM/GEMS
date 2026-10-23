@@ -37,6 +37,54 @@ This repository now contains a small Flet-based application and headless pipelin
 - mapping source metadata into CollectionBuilder-oriented fields, and
 - writing a `collection_metadata.csv` plus exported objects and normalized JSON.
 
+### Metadata not covered by a field map
+
+GEMS appends unmapped source metadata after the mapped CSV columns, prefixing
+each original field name with one underscore. For example,
+`dcterms:alternative` becomes `_dcterms:alternative`, and
+`wmi:instrumentCategory` becomes `_wmi:instrumentCategory`. Names retain their
+original namespace, spelling, case, and punctuation. These values are also
+included in `normalized_records.json`.
+
+This applies to Alma/generic exports and Omeka CSV, Omeka S JSON, and Classic
+custom element sets. Omeka import is not restricted to a vocabulary allowlist.
+Source-system bookkeeping and media descriptors are not descriptive metadata.
+Explicitly mapped metadata uses its configured destination rather than an
+extra underscore column. With the default Omeka mapping, unused fallback
+fields are retained too: for example, when `coverage` contains Nation,
+`dcterms:spatial` is preserved as `_dcterms:spatial`, not silently discarded.
+Columns are shared by every row: if a source field is unmapped for any record,
+its underscore column is filled for all rows. A value can therefore appear both
+in a mapped column and in its underscore column. For example, the default
+`coverage` uses `dcterms:coverage` when present and otherwise falls back to
+`dcterms:spatial`, so `_dcterms:coverage` and `_dcterms:spatial` remain the
+unambiguous source values.
+Existing repeated-value normalization still applies (`; ` separators).
+
+The appended schema is determined from the entire input, even when exporting
+one batch, so later batches use the same columns. An appended name that
+conflicts with a configured output column fails explicitly rather than
+overwriting either value. Existing batched runs with the older, narrower CSV
+header cannot be resumed into that same CSV; use a fresh output directory.
+This change does not retroactively repair existing exports or alter originals.
+
+To repair an existing Omeka run without downloading again, use
+[scripts/rebuild_omeka_metadata.py](scripts/rebuild_omeka_metadata.py). It
+replays the export offline into a new scratch folder. Files that downloaded
+before are replaced by empty placeholders, and URLs in the run's
+`download_errors.csv` fail again. It then verifies that rows, file paths,
+failures, and every existing column value are unchanged and that no source value
+is missing. With `--install`, it backs up and replaces only
+`collection_metadata.csv` and `normalized_records.json`; `objects/` and
+`download_errors.csv` are never written:
+
+```bash
+.venv/bin/python scripts/rebuild_omeka_metadata.py --source <export.csv> \
+  --run <run-dir> --scratch <new-scratch-dir>            # verify only
+.venv/bin/python scripts/rebuild_omeka_metadata.py --source <export.csv> \
+  --run <run-dir> --scratch <another-new-dir> --install  # verify, back up, replace
+```
+
 ## Offload migrated files from dg-landing
 
 Run [scripts/offload_migrated.sh](scripts/offload_migrated.sh) **on your Mac**,
@@ -129,16 +177,18 @@ The WMI Omeka S CSV export documented in
 [OMEKA-WMI-EXPORT.md](OMEKA-WMI-EXPORT.md) can be imported directly; its
 `o:media[file]` values are the direct original-file URLs used for downloads.
 CSV metadata values separated by the export's ` | ` delimiter are normalized
-to GEMS's `; ` repeated-value convention. Dublin Core and WMI properties are
-retained in normalized metadata.
+to GEMS's `; ` repeated-value convention. Properties from all vocabularies are
+retained; unmapped properties become underscore-prefixed CSV/JSON fields as
+described above.
 
 JSON input can be a single item, an array of items, or an object containing
 an `items`, `records`, or `data` array:
 
-- **Classic:** Dublin Core `element_texts`, with each entry's `element.name`
+- **Classic:** `element_texts`, with each entry's `element.name`
   and `text`; embedded file objects in `files_list` (or a `files` array).
   Files use `file_urls.original`, falling back to `file_urls.fullsize`.
-- **S:** JSON-LD `dcterms:*` / `dc:*` value arrays (`@value` or URI `@id`)
+- **S:** JSON-LD property value arrays (`@value` or URI `@id`),
+  including `dcterms:*`, `dc:*`, and custom vocabularies,
   and embedded `o:media` objects containing `o:original_url`. Filenames come
   from `o:filename`, a filename-like `o:source`, or the download URL.
 

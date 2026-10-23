@@ -190,6 +190,8 @@ def process_records(
     if records and start > len(records):
         raise ValueError(f"Start record {start} exceeds {len(records)} available record(s).")
     selected = records[start - 1 : start - 1 + limit if limit is not None else None]
+    if is_template_map(field_map):
+        field_map = preserve_unmapped_fields(records, field_map)
     destination = Path(output_dir)
     csv_path = destination / "collection_metadata.csv"
     json_path = destination / "normalized_records.json"
@@ -247,11 +249,15 @@ def process_records(
         else:
             rows = merge_batch_rows(rows, csv_path, columns, records)
     else:
-        columns = COLLECTIONBUILDER_FIELDS
+        columns = list(COLLECTIONBUILDER_FIELDS)
         rows = normalize_records(
             selected, field_map=field_map, source_system=source_system,
             legacy_mods_dir=Path(legacy_mods_dir) if legacy_mods_dir else None,
         )
+        for record in records:
+            for key in unmapped_fields(record, simple_mapped_keys(record, field_map)):
+                if key not in columns:
+                    columns.append(key)
         exported_files = export_files(rows, destination / "objects", progress=progress, is_cancelled=is_cancelled)
 
     write_collection_csv(rows, csv_path, columns)
@@ -358,7 +364,9 @@ def merge_batch_rows(
     with csv_path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         if reader.fieldnames is None or not set(columns).issubset(reader.fieldnames):
-            return rows
+            raise ValueError("Existing collection_metadata.csv has different columns; choose a fresh output folder.")
+        if any(column.startswith("_") and column not in columns for column in reader.fieldnames):
+            raise ValueError("Existing collection_metadata.csv has additional preserved metadata; choose a fresh output folder.")
         previous = [{column: row.get(column, "") or "" for column in columns} for row in reader]
 
     def grouped(items: list[dict[str, str]]) -> dict[str, list[dict[str, str]]]:
@@ -440,6 +448,7 @@ def normalize_records(
             "objectid": "",
             "filename": "",
         }
+        base_row.update(unmapped_fields(record, simple_mapped_keys(record, field_map)))
         if not files:
             normalized.append(base_row)
             continue
@@ -452,6 +461,108 @@ def normalize_records(
             row["filename"] = file_info["filename"]
             normalized.append(row)
     return normalized
+
+
+def source_metadata(record: dict[str, Any]) -> dict[str, str]:
+    """Return source names, not the normalized names or synthetic Omeka aliases."""
+    original = record.get("source_metadata")
+    if isinstance(original, dict):
+        return {key: stringify(value) for key, value in original.items()}
+    fields: dict[str, str] = {}
+    for container in ("metadata", "descriptive_metadata", "descriptiveMetadata", "fields"):
+        value = record.get(container)
+        if isinstance(value, dict):
+            fields.update({key: stringify(entry) for key, entry in value.items()})
+        elif isinstance(value, list):
+            for entry in value:
+                if isinstance(entry, dict):
+                    name = entry.get("label") or entry.get("name") or entry.get("field")
+                    if name and entry.get("value") is not None:
+                        fields[str(name)] = stringify(entry["value"])
+    if not any(key in record for key in ("metadata", "descriptive_metadata", "descriptiveMetadata", "fields")):
+        operational = {
+            "mms_id", "objectid", "key", "source_record_id", "source_record_url",
+            "source_system", "originating_system_id", "_source_file", "_asset_folder",
+        }
+        fields.update({
+            key: stringify(value) for key, value in record.items()
+            if key not in operational and isinstance(value, (str, int, float, bool))
+        })
+    return fields
+
+
+def unmapped_fields(record: dict[str, Any], mapped: set[str]) -> dict[str, str]:
+    original = source_metadata(record)
+    metadata = record.get("metadata", {})
+    remaining: dict[str, str] = {}
+    for key, value in original.items():
+        aliases = {key}
+        if "source_metadata" in record:
+            name = key.split(":", 1)[-1]
+            aliases.add(name)
+            if key.startswith(("dc:", "dcterms:")):
+                aliases.update({f"dc:{name}", f"dcterms:{name}"})
+            aliases = {alias for alias in aliases if stringify(metadata.get(alias)) == value}
+        if not aliases.intersection(mapped):
+            remaining[f"_{key}"] = value
+    return remaining
+
+
+def simple_mapped_keys(record: dict[str, Any], field_map: dict[str, str] | None) -> set[str]:
+    metadata = flatten_metadata(record)
+    mapped: set[str] = set()
+    for field in COLLECTIONBUILDER_FIELDS:
+        candidates = ([field_map[field]] if field_map and field in field_map else []) + list(
+            FIELD_ALIASES.get(field, (field,))
+        )
+        for candidate in candidates:
+            name = normalize_key(candidate)
+            keys = (name, f"dc_{name}", f"dcterms_{name}")
+            found = next((key for key in keys if key in metadata), None)
+            if found is None:
+                found = next((key for key in metadata if key.startswith(f"dcterms_{name}_")), None)
+            if found is not None:
+                mapped.update(
+                    key for key, value in source_metadata(record).items()
+                    if normalize_key(key) == found and value == metadata[found]
+                )
+                break
+    return mapped
+
+
+def preserve_unmapped_fields(records: list[dict[str, Any]], template: dict[str, Any]) -> dict[str, Any]:
+    columns = list(template["columns"])
+    rules = dict(template.get("rules", {}))
+
+    def mapped_keys(rule: Any, record: dict[str, Any]) -> set[str]:
+        if not isinstance(rule, dict):
+            return set()
+        sources = rule.get("from", [])
+        sources = [sources] if isinstance(sources, str) else sources
+        sources = [str(source) for source in sources]
+        if template.get("_implicit_mapping"):
+            metadata = record.get("metadata", {})
+            populated = [
+                source for source in sources
+                if source.startswith("metadata.") and stringify(metadata.get(source.partition(".")[2])).strip()
+            ][:1]
+            if populated:
+                sources = populated
+        result = {source.partition(".")[2] for source in sources if source.startswith("metadata.")}
+        result.update(mapped_keys(rule.get("child"), record))
+        result.update(mapped_keys(rule.get("fallback"), record))
+        return result
+
+    for record in records:
+        mapped = set().union(*(mapped_keys(rules.get(column), record) for column in template["columns"]))
+        for column in unmapped_fields(record, mapped):
+            if column in columns:
+                if not isinstance(rules.get(column), dict) or rules[column].get("_source_field") != column[1:]:
+                    raise ValueError(f"Unmapped metadata column {column!r} conflicts with a mapped output column.")
+                continue
+            columns.append(column)
+            rules[column] = {"_source_field": column[1:], "child": "inherit"}
+    return {**template, "columns": columns, "rules": rules}
 
 
 def flatten_metadata(record: dict[str, Any]) -> dict[str, str]:
@@ -1016,6 +1127,8 @@ def apply_rule(
     *,
     is_fallback: bool = False,
 ) -> str:
+    if "_source_field" in rule:
+        return source_metadata(record).get(rule["_source_field"], "")
     if "value" in rule:
         return stringify(rule["value"])
     sources = rule.get("from", [])

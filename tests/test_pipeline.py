@@ -133,8 +133,10 @@ class PipelineTests(unittest.TestCase):
             with result.csv_path.open("r", encoding="utf-8", newline="") as handle:
                 reader = csv.DictReader(handle)
                 rows = list(reader)
-            self.assertEqual(field_map["columns"], reader.fieldnames)
+            self.assertEqual(field_map["columns"] + ["_dcterms:dateAccepted"], reader.fieldnames)
             parent, first, second, single, rec = rows
+            self.assertEqual(["2011-10"] * 3, [row["_dcterms:dateAccepted"] for row in rows[:3]])
+            self.assertEqual(["", ""], [row["_dcterms:dateAccepted"] for row in rows[3:]])
             self.assertRegex(parent["objectid"], r"^dg_\d{10}$")
             self.assertEqual(("", "compound_object"), (parent["parentid"], parent["display_template"]))
             numbers = [int(row["objectid"].rsplit("_", 1)[1]) for row in rows]

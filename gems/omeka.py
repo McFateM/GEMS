@@ -71,6 +71,7 @@ def _load_omeka(
         source_id = stringify(item.get("o:id") if system == "omeka_s" else item.get("id"))
         context = f"{system} item {source_id or f'at position {index}'}"
         metadata: dict[str, list[str]] = {}
+        source_metadata: dict[str, list[str]] = {}
         if system == "omeka_classic":
             texts = item["element_texts"]
             if not isinstance(texts, list):
@@ -79,16 +80,22 @@ def _load_omeka(
                 if not isinstance(text, dict) or not isinstance(text.get("element"), dict):
                     raise ValueError(f"{context}: each element_texts entry needs an element name and text.")
                 element_set = text.get("element_set", {})
-                if isinstance(element_set, dict) and element_set.get("name", "Dublin Core") != "Dublin Core":
-                    continue
-                name = normalize_key(stringify(text["element"].get("name")))
-                if name in DC_FIELDS:
+                set_name = stringify(element_set.get("name", "Dublin Core")) if isinstance(element_set, dict) else "Dublin Core"
+                element_name = stringify(text["element"].get("name"))
+                name = normalize_key(element_name)
+                source_key = f"dc:{name}" if set_name == "Dublin Core" else f"{set_name}:{element_name}"
+                source_metadata.setdefault(source_key, []).extend(values(text.get("text")))
+                metadata.setdefault(source_key, []).extend(values(text.get("text")))
+                if set_name == "Dublin Core" and name in DC_FIELDS:
                     metadata.setdefault(name, []).extend(values(text.get("text")))
             raw_media = item.get("files_list", item.get("files", []))
             if isinstance(raw_media, dict) and raw_media.get("count") == 0:
                 raw_media = []
         else:
             for key, value in item.items():
+                if not key.startswith(("@", "o:")):
+                    source_metadata[key] = values(value)
+                    metadata[key] = values(value)
                 if key.startswith(("dcterms:", "dc:")):
                     name = key.split(":", 1)[1]
                     metadata.setdefault(name, []).extend(values(value))
@@ -137,11 +144,13 @@ def _load_omeka(
             files.append({"source": url, "filename": name or f"object-{media_index}"})
         flattened = {key: "; ".join(dict.fromkeys(value)) for key, value in metadata.items()}
         for key, value in list(flattened.items()):
-            flattened[f"dcterms:{key}"] = value
-            if key in DC_FIELDS:
-                flattened[f"dc:{key}"] = value
+            if ":" not in key:
+                flattened.setdefault(f"dcterms:{key}", value)
+                if key in DC_FIELDS:
+                    flattened.setdefault(f"dc:{key}", value)
         records.append({
             "metadata": flattened,
+            "source_metadata": {key: "; ".join(dict.fromkeys(value)) for key, value in source_metadata.items()},
             "files": files,
             "source_system": system,
             "source_record_id": f"{system}-{source_id or 'item'}-{index}",
@@ -170,22 +179,23 @@ def _load_omeka_csv(source: Path, *, is_cancelled: CancelCheck | None) -> list[d
                     raise ValueError(f"Malformed Omeka CSV at row {index + 1}: too many values for the header.")
                 source_id = stringify(row.get("o:id"))
                 metadata: dict[str, str] = {}
+                source_metadata: dict[str, str] = {}
                 for header in headers:
-                    if not header.startswith(("dc:", "dcterms:", "wmi:", "lrmi:")):
+                    if header.startswith(("@", "o:")):
                         continue
                     raw_value = row.get(header) or ""
                     values_for_field = list(dict.fromkeys(
                         value.strip() for value in raw_value.split(" | ") if value.strip()
                     ))
-                    if not values_for_field:
-                        continue
                     value = "; ".join(values_for_field)
-                    name = header.split(":", 1)[1]
-                    metadata[name] = value
+                    source_metadata[header] = value
                     metadata[header] = value
+                for header, value in source_metadata.items():
+                    name = header.split(":", 1)[-1]
+                    metadata.setdefault(name, value)
                     if header.startswith(("dc:", "dcterms:")):
-                        metadata[f"dc:{name}"] = value
-                        metadata[f"dcterms:{name}"] = value
+                        metadata.setdefault(f"dc:{name}", value)
+                        metadata.setdefault(f"dcterms:{name}", value)
 
                 files: list[dict[str, str]] = []
                 raw_urls = row.get("o:media[file]") or ""
@@ -203,6 +213,7 @@ def _load_omeka_csv(source: Path, *, is_cancelled: CancelCheck | None) -> list[d
                     files.append({"source": url, "filename": filename or f"object-{media_index}"})
                 records.append({
                     "metadata": metadata,
+                    "source_metadata": source_metadata,
                     "files": files,
                     "source_system": "omeka_s",
                     "source_record_id": f"omeka_s-{source_id or 'item'}-{index}",
@@ -240,8 +251,10 @@ def values(value: Any) -> list[str]:
     if isinstance(value, dict):
         if "@value" in value:
             return values(value["@value"])
-        return values(value.get("@id") or value.get("display_title"))
-    return [str(value).strip()] if isinstance(value, (str, int, float)) and str(value).strip() else []
+        if "@id" in value or "display_title" in value:
+            return values(value.get("@id") or value.get("display_title"))
+        return [stringify(value)] if value else []
+    return [str(value).strip()] if isinstance(value, (str, int, float, bool)) and str(value).strip() else []
 
 
 def asset_field_map(field_map: dict[str, Any] | None) -> dict[str, Any]:
@@ -271,4 +284,4 @@ def asset_field_map(field_map: dict[str, Any] | None) -> dict[str, Any]:
         rules[column] = {"from": [f"metadata.{alias}" for alias in aliases], "split": False}
     for column in ("source_system", "source_record_url", "originating_system_id"):
         rules[column] = {"from": f"record.{column}"}
-    return {"columns": columns, "rules": rules}
+    return {"columns": columns, "rules": rules, "_implicit_mapping": True}
