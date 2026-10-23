@@ -329,6 +329,8 @@ def validate_asset_output(
     if unexpected:
         raise ValueError("The output objects folder contains assets outside this Omeka export; choose a fresh output folder.")
     for row in previous:
+        if row["original_file_name"] not in expected:
+            continue  # Synthetic compound parents have no physical asset.
         if not expected[row["original_file_name"]].is_file():
             raise ValueError(
                 f"Existing metadata references missing asset {row['original_file_name']}; "
@@ -340,8 +342,12 @@ def merge_asset_rows(
     rows: list[dict[str, str]], csv_path: Path, columns: list[str],
     records: list[dict[str, Any]], selected: list[dict[str, Any]],
 ) -> list[dict[str, str]]:
-    expected = [item["filename"] for record in records for item in record["_asset_items"]]
-    replaced = {item["filename"] for record in selected for item in record["_asset_items"]}
+    def names(record: dict[str, Any]) -> list[str]:
+        assets = [item["filename"] for item in record["_asset_items"]]
+        return [f"_{name}" for name in sorted(assets)] + assets
+
+    expected = [name for record in records for name in names(record)]
+    replaced = {name for record in selected for name in names(record)}
     merged: dict[str, dict[str, str]] = {}
     if csv_path.exists():
         with csv_path.open(encoding="utf-8", newline="") as handle:
@@ -834,6 +840,18 @@ def map_to_template(
             count += 1
             successful_items.append(item)
         if asset_rows_only:
+            if len(successful_items) > 1:
+                first = min(successful_items, key=lambda item: item["filename"])
+                context = {
+                    "filename": f"_{first['filename']}",
+                    "display_template": "compound_object",
+                    "filenames": "; ".join(item["filename"] for item in successful_items),
+                }
+                row = build_template_row(columns, rules, record, metadata, context, mods, child=False)
+                row["original_file_name"] = context["filename"]
+                if "filename" in columns:
+                    row["filename"] = context["filename"]
+                rows.append(row)
             for item in successful_items:
                 context = file_context(item)
                 row = build_template_row(columns, rules, record, metadata, context, mods, child=False)

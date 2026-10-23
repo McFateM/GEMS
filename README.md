@@ -37,7 +37,7 @@ This repository now contains a small Flet-based application and headless pipelin
 - mapping source metadata into CollectionBuilder-oriented fields, and
 - writing a `collection_metadata.csv` plus exported objects and normalized JSON.
 
-### Metadata not covered by a field map
+### Metadata Not Covered by a Field Map
 
 GEMS appends unmapped source metadata after the mapped CSV columns, prefixing
 each original field name with one underscore. For example,
@@ -72,9 +72,11 @@ To repair an existing Omeka run without downloading again, use
 [scripts/rebuild_omeka_metadata.py](scripts/rebuild_omeka_metadata.py). It
 replays the export offline into a new scratch folder. Files that downloaded
 before are replaced by empty placeholders, and URLs in the run's
-`download_errors.csv` fail again. It then verifies that rows, file paths,
-failures, and every existing column value are unchanged and that no source value
-is missing. With `--install`, it backs up and replaces only
+`download_errors.csv` fail again. It adds a metadata-only compound parent when
+an item has at least two successful assets, using `_<first-successful-filename>`
+(sorted by filename) to match DART's parent. It then verifies that asset rows,
+file paths, failures, and every existing column value are unchanged and that no
+source value is missing. With `--install`, it backs up and replaces only
 `collection_metadata.csv` and `normalized_records.json`; `objects/` and
 `download_errors.csv` are never written:
 
@@ -84,6 +86,18 @@ is missing. With `--install`, it backs up and replaces only
 .venv/bin/python scripts/rebuild_omeka_metadata.py --source <export.csv> \
   --run <run-dir> --scratch <another-new-dir> --install  # verify, back up, replace
 ```
+
+For WMI, add `--preserve-source-names` to retain **all** original descriptive
+field names with a leading underscore, including fields already represented in
+canonical columns. For example, Formation remains `_dcterms:type`, Region
+remains `_dcterms:source`, and `_wmi:instrumentCategory` keeps its existing name
+(no second underscore is added to an existing output column). Canonical fields
+such as `title` remain available for CollectionBuilder. Include the underscore
+columns in the DART core schema or GEMS backfill cannot copy them. Source field
+names and user-facing labels are separate: SHOW can label `_dcterms:spatial`
+"Continent", `_dcterms:coverage` "Nation", and `_dcterms:subject`
+"Classification" without renaming CSV columns. Use Liquid bracket access for
+names containing colons, for example `item['_dcterms:type']`.
 
 ## Offload migrated files from dg-landing
 
@@ -226,8 +240,13 @@ cancellation, and CSV/JSON writers:
   `date` are unprefixed. Repeated values use `; `, following GEMS conventions.
   Omeka IDs appear only in `originating_system_id`; `source_system` and
   `source_record_url` retain provenance. They are not DART IDs.
-- Omeka exports never assign `objectid` / `parentid`, create structural rows,
-  or convert transcript assets. DART determines structure later from the files.
+- Omeka exports never assign `objectid` / `parentid` or convert transcript
+  assets. An item with at least two successful files also receives one metadata
+  parent row, before its file rows. Its `original_file_name` (and `filename`,
+  when present) is the alphabetically first successful basename prefixed with
+  `_`, matching DART's folder parent. It repeats the complete item metadata;
+  no physical parent file is created. Single-file items do not get a parent.
+  DART still determines structure and assigns durable IDs from the files.
 - Items with no media are skipped with an activity-log warning and an explicit
   completion notice; no fake file or metadata-only row is created.
 - A missing media URL, unsupported structure, malformed JSON, download failure,
@@ -241,7 +260,7 @@ to every physical file, omits ID columns, and forces `original_file_name` to the
 actual basename. It does not apply Alma child-row rules or legacy MODS fallbacks.
 The default mapping needs no field map and uses canonical unprefixed columns.
 
-#### Continue past unavailable Omeka originals
+#### Continue Past Unavailable Omeka Originals
 
 Headless Omeka imports normally stop at the first download error. To retain
 successful files and continue past HTTP errors (including 403/404), network
@@ -279,7 +298,7 @@ order. Use a fresh output directory for a different export or mapping; GEMS
 rejects incompatible existing CSV columns or unrelated assets before downloading.
 Do not edit source identities or media filenames between batches.
 
-The asset-only contract above applies to the new Omeka adapter. The existing
+The Omeka contract above applies to the new adapter. The existing
 Alma template workflow, including its legacy structural rows, is preserved.
 
 ### Audit an Alma XML record's CSV mapping

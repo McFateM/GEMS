@@ -166,11 +166,12 @@ class ServiceTests(unittest.TestCase):
                     job = self.wait(job_id)
                 self.assertEqual("succeeded", job["state"], job["message"])
                 alma.assert_not_called()
-                self.assertEqual((count, count), (job["result"]["rows"], job["result"]["files"]))
+                expected_rows = count + (1 if count > 1 else 0)
+                self.assertEqual((expected_rows, count), (job["result"]["rows"], job["result"]["files"]))
                 self.assertEqual(output / "collection_metadata.csv", Path(job["result"]["csv"]))
                 with Path(job["result"]["csv"]).open(newline="") as handle:
                     rows = list(csv.DictReader(handle))
-                self.assertEqual(count, len(rows))
+                self.assertEqual(expected_rows, len(rows))
                 for row in rows:
                     self.assertNotIn("objectid", row)
                 assets = [path for path in (output / "objects").rglob("*") if path.is_file()]

@@ -48,14 +48,14 @@ class OmekaTests(unittest.TestCase):
         with patch("gems.pipeline.urlretrieve", side_effect=self.download):
             return process_export(self.source, self.output, source_type="omeka", **kwargs)
 
-    def rows(self, result):
+    def rows(self, result, *, include_parents=False):
         with result.csv_path.open(encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
             rows = list(reader)
             self.assertNotIn("objectid", reader.fieldnames)
             self.assertNotIn("parentid", reader.fieldnames)
             self.assertFalse(any(name.startswith(("dc_", "dcterms_")) for name in reader.fieldnames))
-        return rows
+        return rows if include_parents else [row for row in rows if not row["original_file_name"].startswith("_")]
 
     def assert_assets(self, result):
         rows = self.rows(result)
@@ -66,6 +66,16 @@ class OmekaTests(unittest.TestCase):
         self.assertTrue(all(path.parent != result.objects_dir for path in assets))
         self.assertTrue(all(row["filename"] == row["original_file_name"] for row in rows))
         self.assertFalse(any(row.get("display_template") == "compound_object" for row in rows))
+        parents = [row for row in self.rows(result, include_parents=True)
+                   if row["original_file_name"].startswith("_")]
+        self.assertEqual(result.row_count, len(rows) + len(parents))
+        for parent in parents:
+            folder = next(path.parent for path in assets if path.name == parent["original_file_name"][1:])
+            names = {path.name for path in assets if path.parent == folder}
+            children = [row for row in rows if row["original_file_name"] in names]
+            self.assertGreater(len(children), 1)
+            self.assertEqual(f"_{min(row['original_file_name'] for row in children)}", parent["original_file_name"])
+            self.assertEqual(children[0]["title"], parent["title"])
         return rows, assets
 
     def test_classic_single_uses_original_and_preserves_source_not_dart_ids(self):
@@ -161,7 +171,7 @@ class OmekaTests(unittest.TestCase):
         self.assertEqual({"omeka_s"}, {row["source_system"] for row in rows})
         self.assertEqual(2, len(assets))
 
-    def test_template_mapping_reuses_rules_but_never_creates_ids_or_parents(self):
+    def test_template_mapping_reuses_rules_and_creates_parent_metadata_without_ids(self):
         template = json.loads((ROOT / "maps" / "alma-dc-to-grinnell.json").read_text())
         with patch("gems.pipeline.assign_objectids", side_effect=AssertionError("must not assign IDs")):
             result = self.export(self.fixture("classic-multiple.json"), field_map=template)
@@ -349,10 +359,35 @@ class OmekaTests(unittest.TestCase):
         self.assertNotEqual(errors[0]["filename"], rows[0]["original_file_name"])
         self.assertFalse(any(".gems-" in path.name or path.name.endswith(".part") for path in assets))
         recovered = self.export(payload, skip_download_errors=True)
-        self.assertEqual((2, 2), (recovered.row_count, recovered.file_count))
+        self.assertEqual((3, 2), (recovered.row_count, recovered.file_count))
         self.assertEqual([], recovered.failed_downloads)
         with (self.output / "download_errors.csv").open(encoding="utf-8", newline="") as handle:
             self.assertEqual(errors, list(csv.DictReader(handle)))
+
+    def test_parent_uses_first_successful_filename_and_is_replaced_on_retry(self):
+        payload = self.fixture("classic-multiple.json")
+        item = payload["items"][0]
+        third = copy.deepcopy(item["files_list"][1])
+        third["file_urls"]["original"] = "https://example.org/page3.tif"
+        item["files_list"].append(third)
+        self.write_source(payload)
+
+        def download(url, destination):
+            if "page2.tif" in url:
+                raise HTTPError(url, 403, "Forbidden", {}, None)
+            return self.download(url, destination)
+
+        with patch("gems.pipeline.urlretrieve", side_effect=download):
+            result = process_export(self.source, self.output, source_type="omeka", skip_download_errors=True)
+        rows = self.rows(result, include_parents=True)
+        self.assertEqual((3, 2), (result.row_count, result.file_count))
+        self.assertEqual("_" + min(row["original_file_name"] for row in rows[1:]), rows[0]["original_file_name"])
+        self.assertEqual("Ledger", rows[0]["title"])
+        result = self.export(payload)
+        rows = self.rows(result, include_parents=True)
+        self.assertEqual((4, 3), (result.row_count, result.file_count))
+        self.assertEqual(1, sum(row["original_file_name"].startswith("_") for row in rows))
+        self.assertEqual("_Ledger_10-01.tif", rows[0]["original_file_name"])
 
     def test_skip_download_errors_does_not_hide_local_write_errors(self):
         self.write_source(self.fixture("classic-single.json"))
@@ -472,7 +507,7 @@ class OmekaTests(unittest.TestCase):
     def test_batches_merge_in_export_order_and_reruns_do_not_duplicate(self):
         payload = self.fixture("classic-single.json") + self.fixture("s-media.json")
         first = self.export(payload, start=2, limit=1)
-        self.assertEqual(2, first.row_count)
+        self.assertEqual(3, first.row_count)
         second = self.export(payload, start=1, limit=1)
         rows, _ = self.assert_assets(second)
         self.assertEqual(3, len(rows))

@@ -3,7 +3,8 @@
 
 Replays GEMS's own Omeka export into a scratch folder. Files that downloaded in the original run
 become empty placeholders; URLs listed in the run's download_errors.csv fail again, so metadata
-rows match the original run exactly. Verification compares the rebuild with the existing run.
+asset rows match the original run exactly. Compound parent metadata rows are added when
+two or more successful assets belong to the same item.
 With --install, only collection_metadata.csv and normalized_records.json are replaced (after
 backup). objects/ and download_errors.csv are never written.
 """
@@ -42,11 +43,13 @@ def main() -> int:
     parser.add_argument("--run", required=True, type=Path, help="Existing GEMS Omeka output folder")
     parser.add_argument("--scratch", required=True, type=Path, help="New folder for the rebuild (must not exist)")
     parser.add_argument("--install", action="store_true", help="Replace the run's CSV/JSON after verification")
+    parser.add_argument("--preserve-source-names", action="store_true",
+                        help="Also retain mapped source fields as _<original-name> columns")
     args = parser.parse_args()
 
     from gems.pipeline import DownloadError, process_export
-    from gems.omeka import load_omeka
-    from gems.pipeline import prepare_asset_records
+    from gems.omeka import asset_field_map, load_omeka
+    from gems.pipeline import prepare_asset_records, preserve_unmapped_fields, source_metadata
 
     run, scratch = args.run.resolve(), args.scratch.resolve()
     if scratch.exists():
@@ -67,9 +70,21 @@ def main() -> int:
                 raise DownloadError("Replayed failure from original run (no network request)") from error
         Path(destination).write_bytes(b"")
 
+    records = load_omeka(args.source)
+    field_map = None
+    if args.preserve_source_names:
+        field_map = preserve_unmapped_fields(records, asset_field_map(None))
+        for record in records:
+            for key in source_metadata(record):
+                column = f"_{key}"
+                if column not in field_map["columns"]:
+                    field_map["columns"].append(column)
+                    field_map["rules"][column] = {"_source_field": key, "child": "inherit"}
+
     logging.getLogger("gems").setLevel(logging.ERROR)
     with patch("gems.pipeline.fetch_object", side_effect=offline_fetch):
-        result = process_export(args.source, scratch, source_type="omeka", skip_download_errors=True)
+        result = process_export(args.source, scratch, source_type="omeka", field_map=field_map,
+                                skip_download_errors=True)
 
     problems: list[str] = []
     old_headers, old_rows = read_csv(old_csv)
@@ -78,30 +93,47 @@ def main() -> int:
         problems.append("Replayed failures differ from download_errors.csv.")
     if set(snapshot(scratch / "objects")) != set(before):
         problems.append("Rebuilt object paths differ from the run's objects/ folder.")
-    if [r["original_file_name"] for r in new_rows] != [r["original_file_name"] for r in old_rows]:
-        problems.append("Row order or original_file_name values differ.")
-    if new_headers[: len(old_headers)] != old_headers:
+    prepare_asset_records(records)
+    by_name = {item["filename"]: record for record in records for item in record["_asset_items"]}
+    old_assets = [row for row in old_rows if row["original_file_name"] in by_name]
+    new_assets = [row for row in new_rows if row["original_file_name"] in by_name]
+    if [r["original_file_name"] for r in new_assets] != [r["original_file_name"] for r in old_assets]:
+        problems.append("Asset row order or original_file_name values differ.")
+    old_names = {row["original_file_name"] for row in old_rows}
+    new_by_name = {row["original_file_name"]: row for row in new_rows}
+    if len(new_by_name) != len(new_rows) or old_names - set(new_by_name):
+        problems.append("Duplicate rebuilt names or missing existing rows.")
+    if [column for column in new_headers if column in old_headers] != old_headers:
         problems.append("Existing columns were not kept in their original order.")
-    added = new_headers[len(old_headers):]
+    added = [column for column in new_headers if column not in old_headers]
     if any(not column.startswith("_") for column in added):
         problems.append(f"Unexpected non-underscore columns: {[c for c in added if not c.startswith('_')]}")
     changed = [
         (old["original_file_name"], column)
-        for old, new in zip(old_rows, new_rows) for column in old_headers if old[column] != new[column]
+        for old in old_rows for column in old_headers
+        if old["original_file_name"] in new_by_name
+        and old[column] != new_by_name[old["original_file_name"]][column]
     ]
     if changed:
         problems.append(f"{len(changed)} existing values changed, e.g. {changed[:5]}")
     if json.loads(result.json_path.read_text(encoding="utf-8")) != new_rows:
         problems.append("normalized_records.json does not match the rebuilt CSV.")
 
-    records = load_omeka(args.source)
-    prepare_asset_records(records)
-    by_name = {item["filename"]: record for record in records for item in record["_asset_items"]}
+    expected_names = {row["original_file_name"] for row in new_assets}
+    for record in records:
+        assets = [item["filename"] for item in record["_asset_items"] if item["filename"] in new_by_name]
+        if len(assets) > 1:
+            parent_name = f"_{min(assets)}"
+            by_name[parent_name] = record
+            expected_names.add(parent_name)
+    if set(new_by_name) != expected_names:
+        problems.append("Missing or unexpected synthetic parent rows.")
     missing = [
         (row["original_file_name"], key)
         for row in new_rows
+        if row["original_file_name"] in by_name
         for key, value in by_name[row["original_file_name"]]["source_metadata"].items()
-        if value and value not in row.values()
+        if value and (row.get(f"_{key}") != value if args.preserve_source_names else value not in row.values())
     ]
     if missing:
         problems.append(f"{len(missing)} source values missing from output, e.g. {missing[:5]}")
@@ -115,10 +147,11 @@ def main() -> int:
     if problems:
         print("VERIFICATION FAILED; run left unchanged:", *problems, sep="\n  ")
         return 1
-    print("Verification passed: same rows, files, failures, and existing values; no source values missing.")
+    print("Verification passed: same asset rows, files, failures, and existing values; "
+          "compound parent metadata added; no source values missing.")
 
     if args.install:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         for new, old in ((result.csv_path, old_csv), (result.json_path, old_json)):
             backup = old.with_name(f"{old.name}.pre-unmapped-{stamp}")
             shutil.copy2(old, backup)
