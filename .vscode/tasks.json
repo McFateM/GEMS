@@ -1,0 +1,17 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Open current CSV in Modern CSV",
+			"type": "shell",
+			"command": "open",
+			"args": [
+				"-a",
+				"Modern CSV",
+				"${file}"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		}
+	]
+}
